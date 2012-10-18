@@ -10,7 +10,10 @@ import Control.Monad.State (MonadState, StateT, runStateT, get, put, modify)
 
 import Data.Acid
 import Data.Acid.Local
+import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Data
+import Data.Dynamic
 import Data.SafeCopy
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -112,18 +115,25 @@ isWhen x y = x == y
 
 data Cleanup = Cleanup When (IO ())
 
+type PluginName = Text
+
 data PluginsState = PluginsState
-    { pluginsPreProcs   :: Map Text (Text -> IO Text)
+    { pluginsPreProcs   :: Map PluginName (Text -> IO Text)
+    , pluginsHandler    :: Map PluginName ([Text] -> IO ())
     , pluginsOnShutdown :: [Cleanup]
+    , pluginsRouteFn    :: Map PluginName Dynamic -- (url -> [(Text, Text)] -> Text)
     }
 
+-- | we don't really want to give the Plugin unrestricted access to modify the PluginsState TVar. So we will use a newtype?
 newtype Plugins = Plugins { ptv :: TVar PluginsState }
 
 initPlugins :: IO Plugins
 initPlugins =
     do ptv <- atomically $ newTVar
               (PluginsState { pluginsPreProcs   = Map.empty
+                            , pluginsHandler    = Map.empty
                             , pluginsOnShutdown = []
+                            , pluginsRouteFn    = Map.empty
                             }
               )
        return (Plugins ptv)
@@ -144,12 +154,15 @@ withPlugins action =
                    (destroyPlugins OnFailure)
                    (\p -> do r <- action p ; destroyPlugins OnNormal p; return r)
 
-
 addPreProc :: (MonadIO m) => Plugins -> Text -> (Text -> IO Text) -> m ()
 addPreProc (Plugins tps) pname pp =
     liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
               ps { pluginsPreProcs = Map.insert pname pp pluginsPreProcs }
 
+addHandler :: (MonadIO m) => Plugins -> Text -> ([Text] -> IO ()) -> m ()
+addHandler (Plugins tps) pname ph =
+    liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
+              ps { pluginsHandler = Map.insert pname ph pluginsHandler }
 
 -- | add a new cleanup action to the top of the stack
 addCleanup :: (MonadIO m) => Plugins -> When -> IO () -> m ()
@@ -157,12 +170,170 @@ addCleanup (Plugins tps) when action =
     liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
         ps { pluginsOnShutdown = (Cleanup when action) : pluginsOnShutdown }
 
+addPluginRouteFn :: (MonadIO m, Typeable url) =>
+                    Plugins
+                 -> Text
+                 -> (url -> [(Text, Text)] -> Text)
+                 -> m ()
+addPluginRouteFn (Plugins tpv) pluginName routeFn =
+    liftIO $ atomically $ modifyTVar' tpv $ \ps@PluginsState{..} ->
+              ps { pluginsRouteFn = Map.insert pluginName (toDyn routeFn) pluginsRouteFn }
 
--- we don't really want to give the Plugin unrestricted access to modify the PluginsState TVar. So we will use a newtype?
 
-data Plugin url st  = Plugin
-    { pluginInit       :: Plugins -> IO st
+getPluginRouteFn :: (MonadIO m, Typeable url) =>
+                    Plugins
+                 -> Text
+                 -> m (Maybe (url -> [(Text, Text)] -> Text))
+getPluginRouteFn (Plugins ptv) pluginName =
+    do routeFns <- liftIO $ atomically $ pluginsRouteFn <$> readTVar ptv
+       case Map.lookup pluginName routeFns of
+         Nothing -> return Nothing
+         (Just dyn) -> return $ fromDynamic dyn
+
+data Plugin url = Plugin
+    { pluginName         :: PluginName
+    , pluginInit         :: Plugins -> IO (Maybe Text)
+    , pluginDepends      :: [Text]   -- ^ plugins which much be initialized before this one can be
+    , pluginToPathInfo   :: url -> Text
+--    , pluginHandler      :: [Text] -> Either String url
+--    , pluginFromPathInfo :: ByteString -> Either String url
     }
+
+------------------------------------------------------------------------------
+-- Example
+------------------------------------------------------------------------------
+
+data ClckURL
+    = ViewPage
+      deriving (Eq, Ord, Show, Read, Data, Typeable)
+
+data MyState = MyState
+    {
+    }
+    deriving (Eq, Ord, Data, Typeable)
+$(deriveSafeCopy 0 'base ''MyState)
+$(makeAcidic ''MyState [])
+
+data MyURL
+    = MyURL
+    deriving (Eq, Ord, Show, Read, Data, Typeable)
+
+data MyPluginsState = MyPluginsState
+    { myAcid :: AcidState MyState
+    }
+
+myPreProcessor :: URLFn ClckURL
+               -> URLFn MyURL
+               -> (Text -> IO Text)
+myPreProcessor showFnClckURL showFnMyURL  =
+    \t -> return t
+
+{-
+
+Things to do:
+
+ 1. open the acid-state for the plugin
+ 2. register a callback which uses the AcidState
+ 3. register an action to close the database on shutdown
+
+-}
+
+myInit :: Plugins -> IO (Maybe Text) -- MyPluginsState
+myInit plugins =
+    do (Just clckShowFn) <- getPluginRouteFn plugins "clck"
+       (Just myShowFn)   <- getPluginRouteFn plugins "my"
+       acid <- liftIO $ openLocalState MyState
+       addCleanup plugins OnNormal  (putStrLn "myPlugin: normal shutdown"  >> createCheckpointAndClose acid)
+       addCleanup plugins OnFailure (putStrLn "myPlugin: failure shutdown" >> closeAcidState acid)
+       addPreProc plugins "my" (myPreProcessor clckShowFn myShowFn)
+       addHandler plugins "my" (myPluginHandler acid clckShowFn myShowFn)
+       putStrLn "myInit completed."
+--       return (MyPluginsState acid)
+       return Nothing
+
+
+myPlugin :: Plugin MyURL -- MyPluginsState
+myPlugin = Plugin
+    { pluginName         = "my"
+    , pluginInit         = myInit
+    , pluginDepends      = []
+    , pluginToPathInfo   = Text.pack . show
+--    , pluginFromPathInfo = read . B.unpack
+    }
+
+initPlugin :: (Typeable url) => Plugins -> Text -> Plugin url -> IO ()
+initPlugin plugins baseURI (Plugin{..}) =
+    do addPluginRouteFn plugins pluginName (\u p -> baseURI <> "/" <> pluginToPathInfo u)
+       pluginInit plugins
+       return ()
+
+myPluginHandler _ _ _ _ =
+    do putStrLn "My plugin handler"
+       return ()
+
+class (Monad m) => MonadRoute m url where
+    askRouteFn :: m (url -> [(Text, Text)] -> Text)
+
+mkRouteFn :: (Show url) => Text -> Text -> URLFn url
+mkRouteFn baseURI prefix =
+    \url params -> baseURI <> "/" <>  prefix <> "/" <> Text.pack (show url)
+
+main :: IO ()
+main =
+    let baseURI = "http://localhost:8000"
+    in
+      withPlugins $ \plugins ->
+          do addPluginRouteFn plugins "clck" (\u p -> baseURI <> "/" <> Text.pack (show (u :: ClckURL)))
+             initPlugin plugins baseURI myPlugin
+             serve plugins "my" ["MyURL"]
+             return ()
+
+serve :: Plugins -> Text -> [Text] -> IO ()
+serve (Plugins plugins) prefix path =
+    do phs <- atomically $ pluginsHandler <$> readTVar plugins
+       case Map.lookup prefix phs of
+         Nothing -> putStrLn $ "Invalid plugin prefix: " ++ Text.unpack prefix
+         (Just h) -> h path
+
+{-
+
+If we want to add plugins at runtime, then we also need to be able to add routes at runtime. But, the static types would appear to make that tricky. However, by using the prefix perhaps we can know what plugin should be providing the route fn.
+
+-}
+
+
+{-
+{-
+
+The pre-processor extensions can rely on resources that only exist in the context of the plugin. For example, looking up some information in a local state and generating a link.
+
+But that is a bit interesting, because we can have a bunch of different preprocessers, each with their own context. So, how does that work? Seems most sensible that the preprocessors all have the same, more general type, and internally they can use their `runPluginT` functions to flatten the structure?
+
+When is a plugin in context really even used?
+
+ - pre-processor
+ - show a plugin specific page
+
+-}
+-}
+{-
+newtype ClckT url m a = ClckT { unClckT :: URLFn url -> m a }
+
+instance (Functor m) => Functor (ClckT url m) where
+    fmap f (ClckT fn) = ClckT $ \u -> fmap f (fn u)
+
+instance (Monad m) => Monad (ClckT url m) where
+    return a = ClckT $ const (return a)
+    (ClckT m) >>= f =
+        ClckT $ \u ->
+            do a <- m u
+               (unClckT $ f a) u
+
+instance (Monad m) => ShowRoute (ClckT url m) url where
+    getRouteFn = ClckT $ \showFn -> return showFn
+
+data ClckURL = ClckURL
+-}
 
 {-
 
@@ -197,116 +368,4 @@ like open a database, and may need to register finalization actions.
 initPlugin :: Plugin url st -> StateT PluginsState IO st
 initPlugin Plugin{..} =
     pluginInit
--}
-------------------------------------------------------------------------------
--- Example
-------------------------------------------------------------------------------
-
-data ClckURL
-    = ViewPage
-      deriving (Eq, Ord, Show)
-
-data MyState = MyState
-    {
-    }
-    deriving (Eq, Ord, Data, Typeable)
-$(deriveSafeCopy 0 'base ''MyState)
-$(makeAcidic ''MyState [])
-
-
-data MyURL
-    = MyURL
-      deriving (Eq, Ord, Show)
-
-
-data MyPluginsState = MyPluginsState
-    { myAcid :: AcidState MyState
-    }
-
-myPreProcessor :: URLFn ClckURL
-               -> URLFn MyURL
-               -> (Text -> IO Text)
-myPreProcessor showFnClckURL showFnMyURL  =
-    \t -> return t
-
-{-
-
-Things to do:
-
- 1. open the acid-state for the plugin
- 2. register a callback which uses the AcidState
- 3. register an action to close the database on shutdown
-
--}
-
-myInit :: URLFn ClckURL -> URLFn MyURL -> Plugins -> IO MyPluginsState
-myInit clckShowFn myShowFn plugins =
-    do acid <- liftIO $ openLocalState MyState
-       addCleanup plugins OnNormal  (putStrLn "myPlugin: normal shutdown"  >> createCheckpointAndClose acid)
-       addCleanup plugins OnFailure (putStrLn "myPlugin: failure shutdown" >> closeAcidState acid)
-       addPreProc plugins "my" (myPreProcessor clckShowFn myShowFn)
-       putStrLn "myInit completed."
-       return (MyPluginsState acid)
-
-
-myPlugin :: URLFn ClckURL -> URLFn MyURL -> Plugin MyURL MyPluginsState
-myPlugin showClckURL showFnMyURL = Plugin
-    { pluginInit = myInit showClckURL showFnMyURL
-    }
-
-
-class (Monad m) => MonadRoute m url where
-    askRouteFn :: m (url -> [(Text, Text)] -> Text)
-
-mkRouteFn :: (Show url) => Text -> Text -> URLFn url
-mkRouteFn baseURI prefix =
-    \url params -> baseURI <> "/" <>  prefix <> "/" <> Text.pack (show url)
-
-main :: IO ()
-main =
-    let baseURI = "http://localhost:8000"
-        clckRouteFn = mkRouteFn baseURI "c"
-        myRouteFn   = mkRouteFn baseURI "my"
-    in
-      withPlugins $ \plugins ->
-          do mps <- myInit clckRouteFn myRouteFn plugins
-             serve plugins ViewPage
-             return ()
-
-serve :: Plugins -> ClckURL -> IO ()
-serve plugins ViewPage =
-    putStrLn "viewing page"
-
-
-{-
-{-
-
-The pre-processor extensions can rely on resources that only exist in the context of the plugin. For example, looking up some information in a local state and generating a link.
-
-But that is a bit interesting, because we can have a bunch of different preprocessers, each with their own context. So, how does that work? Seems most sensible that the preprocessors all have the same, more general type, and internally they can use their `runPluginT` functions to flatten the structure?
-
-When is a plugin in context really even used?
-
- - pre-processor
- - show a plugin specific page
-
--}
--}
-{-
-newtype ClckT url m a = ClckT { unClckT :: URLFn url -> m a }
-
-instance (Functor m) => Functor (ClckT url m) where
-    fmap f (ClckT fn) = ClckT $ \u -> fmap f (fn u)
-
-instance (Monad m) => Monad (ClckT url m) where
-    return a = ClckT $ const (return a)
-    (ClckT m) >>= f =
-        ClckT $ \u ->
-            do a <- m u
-               (unClckT $ f a) u
-
-instance (Monad m) => ShowRoute (ClckT url m) url where
-    getRouteFn = ClckT $ \showFn -> return showFn
-
-data ClckURL = ClckURL
 -}
