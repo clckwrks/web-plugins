@@ -5,6 +5,7 @@ import Control.Applicative
 import Control.Exception
 import Control.Concurrent.STM (STM, atomically)
 import Control.Concurrent.STM.TVar (TVar, newTVar, readTVar, writeTVar, modifyTVar')
+import Control.Monad       (foldM)
 import Control.Monad.Trans (MonadIO(liftIO))
 import Control.Monad.State (MonadState, StateT, runStateT, get, put, modify)
 
@@ -17,6 +18,7 @@ import Data.Dynamic
 import Data.SafeCopy
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.IO as Text
 import Data.Map  (Map)
 import qualified Data.Map as Map
 import Data.Monoid
@@ -119,9 +121,9 @@ type PluginName = Text
 
 data PluginsState = PluginsState
     { pluginsPreProcs   :: Map PluginName (Text -> IO Text)
-    , pluginsHandler    :: Map PluginName ([Text] -> IO ())
+    , pluginsHandler    :: Map PluginName (Plugins -> [Text] -> IO ())
     , pluginsOnShutdown :: [Cleanup]
-    , pluginsRouteFn    :: Map PluginName Dynamic -- (url -> [(Text, Text)] -> Text)
+    , pluginsRouteFn    :: Map PluginName Dynamic
     }
 
 -- | we don't really want to give the Plugin unrestricted access to modify the PluginsState TVar. So we will use a newtype?
@@ -159,7 +161,7 @@ addPreProc (Plugins tps) pname pp =
     liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
               ps { pluginsPreProcs = Map.insert pname pp pluginsPreProcs }
 
-addHandler :: (MonadIO m) => Plugins -> Text -> ([Text] -> IO ()) -> m ()
+addHandler :: (MonadIO m) => Plugins -> Text -> (Plugins -> [Text] -> IO ()) -> m ()
 addHandler (Plugins tps) pname ph =
     liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
               ps { pluginsHandler = Map.insert pname ph pluginsHandler }
@@ -195,17 +197,65 @@ data Plugin url = Plugin
     , pluginInit         :: Plugins -> IO (Maybe Text)
     , pluginDepends      :: [Text]   -- ^ plugins which much be initialized before this one can be
     , pluginToPathInfo   :: url -> Text
---    , pluginHandler      :: [Text] -> Either String url
---    , pluginFromPathInfo :: ByteString -> Either String url
     }
+
+initPlugin :: (Typeable url) => Plugins -> Text -> Plugin url -> IO ()
+initPlugin plugins baseURI (Plugin{..}) =
+    do addPluginRouteFn plugins pluginName (\u p -> baseURI <> "/" <> pluginToPathInfo u)
+       pluginInit plugins
+       return ()
 
 ------------------------------------------------------------------------------
 -- Example
 ------------------------------------------------------------------------------
 
+
+------------------------------------------------------------------------------
+-- ClckPlugin
+------------------------------------------------------------------------------
+
 data ClckURL
     = ViewPage
       deriving (Eq, Ord, Show, Read, Data, Typeable)
+
+data ClckState = ClckState
+    {
+    }
+    deriving (Eq, Ord, Data, Typeable)
+$(deriveSafeCopy 0 'base ''ClckState)
+$(makeAcidic ''ClckState [])
+
+clckHandler :: URLFn ClckURL -> Plugins -> [Text] -> IO ()
+clckHandler showRoutFn (Plugins tvp) paths = -- FIXME: we assume the paths decode to ViewPage for now
+    do putStrLn "clck handler"
+       pps <- atomically $ pluginsPreProcs <$> readTVar tvp
+       txt <- foldM (\txt pp -> pp txt) "I like cheese." (Map.elems pps)
+       Text.putStrLn txt
+       return ()
+
+clckPreProcessor :: URLFn ClckURL
+                 -> (Text -> IO Text)
+clckPreProcessor showFnClckURL txt =
+    return (Text.replace "like" "love" txt)
+
+clckInit :: Plugins -> IO (Maybe Text)
+clckInit plugins =
+    do (Just clckShowFn) <- getPluginRouteFn plugins "clck"
+       addPreProc plugins "clck" (clckPreProcessor clckShowFn)
+       addHandler plugins "clck" (clckHandler clckShowFn)
+       return Nothing
+
+clckPlugin :: Plugin ClckURL
+clckPlugin = Plugin
+    { pluginName       = "clck"
+    , pluginInit       = clckInit
+    , pluginDepends    = []
+    , pluginToPathInfo = Text.pack . show
+    }
+
+------------------------------------------------------------------------------
+-- MyPlugin
+------------------------------------------------------------------------------
 
 data MyState = MyState
     {
@@ -225,8 +275,8 @@ data MyPluginsState = MyPluginsState
 myPreProcessor :: URLFn ClckURL
                -> URLFn MyURL
                -> (Text -> IO Text)
-myPreProcessor showFnClckURL showFnMyURL  =
-    \t -> return t
+myPreProcessor showFnClckURL showFnMyURL txt =
+    return (Text.replace "cheese" "Haskell" txt)
 
 {-
 
@@ -238,7 +288,7 @@ Things to do:
 
 -}
 
-myInit :: Plugins -> IO (Maybe Text) -- MyPluginsState
+myInit :: Plugins -> IO (Maybe Text)
 myInit plugins =
     do (Just clckShowFn) <- getPluginRouteFn plugins "clck"
        (Just myShowFn)   <- getPluginRouteFn plugins "my"
@@ -248,28 +298,24 @@ myInit plugins =
        addPreProc plugins "my" (myPreProcessor clckShowFn myShowFn)
        addHandler plugins "my" (myPluginHandler acid clckShowFn myShowFn)
        putStrLn "myInit completed."
---       return (MyPluginsState acid)
        return Nothing
 
-
-myPlugin :: Plugin MyURL -- MyPluginsState
+myPlugin :: Plugin MyURL
 myPlugin = Plugin
     { pluginName         = "my"
     , pluginInit         = myInit
-    , pluginDepends      = []
+    , pluginDepends      = ["clck"]
     , pluginToPathInfo   = Text.pack . show
---    , pluginFromPathInfo = read . B.unpack
     }
 
-initPlugin :: (Typeable url) => Plugins -> Text -> Plugin url -> IO ()
-initPlugin plugins baseURI (Plugin{..}) =
-    do addPluginRouteFn plugins pluginName (\u p -> baseURI <> "/" <> pluginToPathInfo u)
-       pluginInit plugins
-       return ()
-
-myPluginHandler _ _ _ _ =
+myPluginHandler _ _ _ _ _ =
     do putStrLn "My plugin handler"
        return ()
+
+------------------------------------------------------------------------------
+-- MonadRoute
+------------------------------------------------------------------------------
+
 
 class (Monad m) => MonadRoute m url where
     askRouteFn :: m (url -> [(Text, Text)] -> Text)
@@ -278,22 +324,27 @@ mkRouteFn :: (Show url) => Text -> Text -> URLFn url
 mkRouteFn baseURI prefix =
     \url params -> baseURI <> "/" <>  prefix <> "/" <> Text.pack (show url)
 
+------------------------------------------------------------------------------
+-- Main
+------------------------------------------------------------------------------
+
 main :: IO ()
 main =
     let baseURI = "http://localhost:8000"
     in
       withPlugins $ \plugins ->
-          do addPluginRouteFn plugins "clck" (\u p -> baseURI <> "/" <> Text.pack (show (u :: ClckURL)))
+          do initPlugin plugins baseURI clckPlugin
              initPlugin plugins baseURI myPlugin
              serve plugins "my" ["MyURL"]
+             serve plugins "clck" ["ViewPage"]
              return ()
 
 serve :: Plugins -> Text -> [Text] -> IO ()
-serve (Plugins plugins) prefix path =
-    do phs <- atomically $ pluginsHandler <$> readTVar plugins
+serve plugins@(Plugins tvp) prefix path =
+    do phs <- atomically $ pluginsHandler <$> readTVar tvp
        case Map.lookup prefix phs of
          Nothing -> putStrLn $ "Invalid plugin prefix: " ++ Text.unpack prefix
-         (Just h) -> h path
+         (Just h) -> h plugins path
 
 {-
 
