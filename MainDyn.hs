@@ -6,6 +6,7 @@ import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import System.Plugins.Load
+import System.Environment
 
 
 ------------------------------------------------------------------------------
@@ -41,11 +42,11 @@ main :: IO ()
 main =
     let baseURI = "http://localhost:8000"
     in
-      withPlugins $ \plugins ->
-          do loadPlugin_ plugins baseURI "ClckPlugin.o" []
-             loadPlugin_ plugins baseURI "MyPlugin.o" []
-             serve plugins "clck" ["ViewPage"]
-             serve plugins "my" ["MyURL"]
+      do objs <- getArgs
+         withPlugins $ \plugins ->
+             do mapM_ (\obj -> loadPlugin_ plugins baseURI obj []) objs
+                serve plugins "clck" ["ViewPage"]
+                serve plugins "my" ["MyURL"]
 
 {-
 main :: IO ()
