@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable, FlexibleContexts, FlexibleInstances, GeneralizedNewtypeDeriving, MultiParamTypeClasses, RecordWildCards, TemplateHaskell, OverloadedStrings #-}
-module Main where
+module Core where
 
 import Control.Applicative
 import Control.Exception
@@ -150,6 +150,7 @@ destroyPlugins whn (Plugins ptv) =
           | isWhen whn whn' = action
           | otherwise       = return ()
 
+-- | a bracketed combination of 'initPlugins' and 'destroyPlugins'. Takes care of passing the correct termination condition.
 withPlugins :: (Plugins -> IO a) -> IO a
 withPlugins action =
     bracketOnError initPlugins
@@ -160,6 +161,10 @@ addPreProc :: (MonadIO m) => Plugins -> Text -> (Text -> IO Text) -> m ()
 addPreProc (Plugins tps) pname pp =
     liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
               ps { pluginsPreProcs = Map.insert pname pp pluginsPreProcs }
+
+getPreProcs :: (MonadIO m) => Plugins -> m (Map Text (Text -> IO Text))
+getPreProcs (Plugins tvp) =
+    liftIO $ atomically $ pluginsPreProcs <$> readTVar tvp
 
 addHandler :: (MonadIO m) => Plugins -> Text -> (Plugins -> [Text] -> IO ()) -> m ()
 addHandler (Plugins tps) pname ph =
@@ -178,8 +183,9 @@ addPluginRouteFn :: (MonadIO m, Typeable url) =>
                  -> (url -> [(Text, Text)] -> Text)
                  -> m ()
 addPluginRouteFn (Plugins tpv) pluginName routeFn =
-    liftIO $ atomically $ modifyTVar' tpv $ \ps@PluginsState{..} ->
-              ps { pluginsRouteFn = Map.insert pluginName (toDyn routeFn) pluginsRouteFn }
+    liftIO $ do -- putStrLn $ "Adding route for " ++ Text.unpack pluginName
+                atomically $ modifyTVar' tpv $ \ps@PluginsState{..} ->
+                  ps { pluginsRouteFn = Map.insert pluginName (toDyn routeFn) pluginsRouteFn }
 
 
 getPluginRouteFn :: (MonadIO m, Typeable url) =>
@@ -187,9 +193,11 @@ getPluginRouteFn :: (MonadIO m, Typeable url) =>
                  -> Text
                  -> m (Maybe (url -> [(Text, Text)] -> Text))
 getPluginRouteFn (Plugins ptv) pluginName =
-    do routeFns <- liftIO $ atomically $ pluginsRouteFn <$> readTVar ptv
+    do -- liftIO $ putStrLn $ "looking up route function for " ++ Text.unpack pluginName
+       routeFns <- liftIO $ atomically $ pluginsRouteFn <$> readTVar ptv
        case Map.lookup pluginName routeFns of
-         Nothing -> return Nothing
+         Nothing -> do -- liftIO $ putStrLn "oops, route not found."
+                       return Nothing
          (Just dyn) -> return $ fromDynamic dyn
 
 data Plugin url = Plugin
@@ -201,121 +209,25 @@ data Plugin url = Plugin
 
 initPlugin :: (Typeable url) => Plugins -> Text -> Plugin url -> IO ()
 initPlugin plugins baseURI (Plugin{..}) =
-    do addPluginRouteFn plugins pluginName (\u p -> baseURI <> "/" <> pluginToPathInfo u)
+    do -- putStrLn $ "initializing " ++ (Text.unpack pluginName)
+       addPluginRouteFn plugins pluginName (\u p -> baseURI <> "/" <> pluginToPathInfo u)
        pluginInit plugins
        return ()
 
 ------------------------------------------------------------------------------
--- Example
+-- serve
 ------------------------------------------------------------------------------
 
-
-------------------------------------------------------------------------------
--- ClckPlugin
-------------------------------------------------------------------------------
-
-data ClckURL
-    = ViewPage
-      deriving (Eq, Ord, Show, Read, Data, Typeable)
-
-data ClckState = ClckState
-    {
-    }
-    deriving (Eq, Ord, Data, Typeable)
-$(deriveSafeCopy 0 'base ''ClckState)
-$(makeAcidic ''ClckState [])
-
-clckHandler :: URLFn ClckURL -> Plugins -> [Text] -> IO ()
-clckHandler showRoutFn (Plugins tvp) paths = -- FIXME: we assume the paths decode to ViewPage for now
-    do putStrLn "clck handler"
-       pps <- atomically $ pluginsPreProcs <$> readTVar tvp
-       txt <- foldM (\txt pp -> pp txt) "I like cheese." (Map.elems pps)
-       Text.putStrLn txt
-       return ()
-
-clckPreProcessor :: URLFn ClckURL
-                 -> (Text -> IO Text)
-clckPreProcessor showFnClckURL txt =
-    return (Text.replace "like" "love" txt)
-
-clckInit :: Plugins -> IO (Maybe Text)
-clckInit plugins =
-    do (Just clckShowFn) <- getPluginRouteFn plugins "clck"
-       addPreProc plugins "clck" (clckPreProcessor clckShowFn)
-       addHandler plugins "clck" (clckHandler clckShowFn)
-       return Nothing
-
-clckPlugin :: Plugin ClckURL
-clckPlugin = Plugin
-    { pluginName       = "clck"
-    , pluginInit       = clckInit
-    , pluginDepends    = []
-    , pluginToPathInfo = Text.pack . show
-    }
-
-------------------------------------------------------------------------------
--- MyPlugin
-------------------------------------------------------------------------------
-
-data MyState = MyState
-    {
-    }
-    deriving (Eq, Ord, Data, Typeable)
-$(deriveSafeCopy 0 'base ''MyState)
-$(makeAcidic ''MyState [])
-
-data MyURL
-    = MyURL
-    deriving (Eq, Ord, Show, Read, Data, Typeable)
-
-data MyPluginsState = MyPluginsState
-    { myAcid :: AcidState MyState
-    }
-
-myPreProcessor :: URLFn ClckURL
-               -> URLFn MyURL
-               -> (Text -> IO Text)
-myPreProcessor showFnClckURL showFnMyURL txt =
-    return (Text.replace "cheese" "Haskell" txt)
-
-{-
-
-Things to do:
-
- 1. open the acid-state for the plugin
- 2. register a callback which uses the AcidState
- 3. register an action to close the database on shutdown
-
--}
-
-myInit :: Plugins -> IO (Maybe Text)
-myInit plugins =
-    do (Just clckShowFn) <- getPluginRouteFn plugins "clck"
-       (Just myShowFn)   <- getPluginRouteFn plugins "my"
-       acid <- liftIO $ openLocalState MyState
-       addCleanup plugins OnNormal  (putStrLn "myPlugin: normal shutdown"  >> createCheckpointAndClose acid)
-       addCleanup plugins OnFailure (putStrLn "myPlugin: failure shutdown" >> closeAcidState acid)
-       addPreProc plugins "my" (myPreProcessor clckShowFn myShowFn)
-       addHandler plugins "my" (myPluginHandler acid clckShowFn myShowFn)
-       putStrLn "myInit completed."
-       return Nothing
-
-myPlugin :: Plugin MyURL
-myPlugin = Plugin
-    { pluginName         = "my"
-    , pluginInit         = myInit
-    , pluginDepends      = ["clck"]
-    , pluginToPathInfo   = Text.pack . show
-    }
-
-myPluginHandler _ _ _ _ _ =
-    do putStrLn "My plugin handler"
-       return ()
+serve :: Plugins -> Text -> [Text] -> IO ()
+serve plugins@(Plugins tvp) prefix path =
+    do phs <- atomically $ pluginsHandler <$> readTVar tvp
+       case Map.lookup prefix phs of
+         Nothing -> putStrLn $ "Invalid plugin prefix: " ++ Text.unpack prefix
+         (Just h) -> h plugins path
 
 ------------------------------------------------------------------------------
 -- MonadRoute
 ------------------------------------------------------------------------------
-
 
 class (Monad m) => MonadRoute m url where
     askRouteFn :: m (url -> [(Text, Text)] -> Text)
@@ -324,27 +236,7 @@ mkRouteFn :: (Show url) => Text -> Text -> URLFn url
 mkRouteFn baseURI prefix =
     \url params -> baseURI <> "/" <>  prefix <> "/" <> Text.pack (show url)
 
-------------------------------------------------------------------------------
--- Main
-------------------------------------------------------------------------------
 
-main :: IO ()
-main =
-    let baseURI = "http://localhost:8000"
-    in
-      withPlugins $ \plugins ->
-          do initPlugin plugins baseURI clckPlugin
-             initPlugin plugins baseURI myPlugin
-             serve plugins "my" ["MyURL"]
-             serve plugins "clck" ["ViewPage"]
-             return ()
-
-serve :: Plugins -> Text -> [Text] -> IO ()
-serve plugins@(Plugins tvp) prefix path =
-    do phs <- atomically $ pluginsHandler <$> readTVar tvp
-       case Map.lookup prefix phs of
-         Nothing -> putStrLn $ "Invalid plugin prefix: " ++ Text.unpack prefix
-         (Just h) -> h plugins path
 
 {-
 
