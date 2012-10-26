@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable, TemplateHaskell, OverloadedStrings #-}
+{-# OPTIONS_GHC -F -pgmFtrhsx #-}
 module ClckPlugin where
 
 import Core
@@ -13,8 +14,10 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import Happstack.Server
+import HSP
 import Web.Routes
 import Web.Routes.TH
+import Theme
 
 ------------------------------------------------------------------------------
 -- ClckPlugin
@@ -33,7 +36,7 @@ $(deriveSafeCopy 0 'base ''ClckState)
 $(makeAcidic ''ClckState [])
 
 clckHandler :: URLFn ClckURL
-            -> Plugins (ServerPart Response)
+            -> Plugins Theme (ServerPart Response)
             -> [Text]
             -> ServerPart Response
 clckHandler showRoutFn plugins paths =
@@ -42,21 +45,22 @@ clckHandler showRoutFn plugins paths =
       (Right ViewPage) ->
           do pps <- liftIO $ getPreProcs plugins
              txt <- liftIO $ foldM (\txt pp -> pp txt) "I like cheese." (Map.elems pps)
-             ok $ toResponse txt
+             themeTemplate plugins "cheese." () <p><% txt %></p>
+--             ok $ toResponse txt
 
 clckPreProcessor :: URLFn ClckURL
                  -> (Text -> IO Text)
 clckPreProcessor showFnClckURL txt =
     return (Text.replace "like" "love" txt)
 
-clckInit :: Plugins (ServerPart Response) -> IO (Maybe Text)
+clckInit :: Plugins Theme (ServerPart Response) -> IO (Maybe Text)
 clckInit plugins =
     do (Just clckShowFn) <- getPluginRouteFn plugins "clck"
        addPreProc plugins "clck" (clckPreProcessor clckShowFn)
        addHandler plugins "clck" (clckHandler clckShowFn)
        return Nothing
 
-clckPlugin :: Plugin ClckURL (ServerPart Response)
+clckPlugin :: Plugin ClckURL Theme (ServerPart Response)
 clckPlugin = Plugin
     { pluginName       = "clck"
     , pluginInit       = clckInit
@@ -64,6 +68,6 @@ clckPlugin = Plugin
     , pluginToPathInfo = Text.pack . show
     }
 
-plugin :: Plugins (ServerPart Response) -> Text -> IO ()
+plugin :: Plugins Theme (ServerPart Response) -> Text -> IO ()
 plugin plugins baseURI =
     do initPlugin plugins baseURI clckPlugin

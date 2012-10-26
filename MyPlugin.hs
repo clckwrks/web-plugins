@@ -11,6 +11,7 @@ import Data.SafeCopy
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Happstack.Server
+import Theme
 
 ------------------------------------------------------------------------------
 -- MyPlugin
@@ -47,7 +48,7 @@ Things to do:
 
 -}
 
-myInit :: Plugins (ServerPart Response) -> IO (Maybe Text)
+myInit :: Plugins Theme (ServerPart Response) -> IO (Maybe Text)
 myInit plugins =
     do (Just clckShowFn) <- getPluginRouteFn plugins "clck"
        (Just myShowFn)   <- getPluginRouteFn plugins "my"
@@ -62,13 +63,13 @@ myInit plugins =
 myPluginHandler :: AcidState MyState
                 -> URLFn ClckURL
                 -> URLFn MyURL
-                -> Plugins (ServerPart Response)
+                -> Plugins Theme (ServerPart Response)
                 -> [Text]
                 -> ServerPart Response
 myPluginHandler _ _ _ _ _ =
     ok $ toResponse ("My plugin handler" :: Text)
 
-myPlugin :: Plugin MyURL (ServerPart Response)
+myPlugin :: Plugin MyURL Theme (ServerPart Response)
 myPlugin = Plugin
     { pluginName         = "my"
     , pluginInit         = myInit
@@ -76,7 +77,6 @@ myPlugin = Plugin
     , pluginToPathInfo   = Text.pack . show
     }
 
-
-plugin :: Plugins (ServerPart Response) -> Text -> IO ()
+plugin :: Plugins Theme (ServerPart Response) -> Text -> IO ()
 plugin plugins baseURI =
     do initPlugin plugins baseURI myPlugin
