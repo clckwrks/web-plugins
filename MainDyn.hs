@@ -1,10 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
+import Control.Applicative ((<$>))
+import Control.Monad.Trans (MonadIO(liftIO))
 import Core
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
+import Happstack.Server
 import System.Plugins.Load
 import System.Environment
 
@@ -13,7 +16,7 @@ import System.Environment
 -- Main
 ------------------------------------------------------------------------------
 
-loadPlugin :: Plugins
+loadPlugin :: Plugins (ServerPart Response)
            -> Text        -- ^ baseURI
            -> FilePath    -- ^ object file .hi
            -> [FilePath]  -- ^ include paths
@@ -27,7 +30,7 @@ loadPlugin plugins baseURI obj incs =
                 return Nothing
 
 
-loadPlugin_ :: Plugins
+loadPlugin_ :: Plugins (ServerPart Response)
            -> Text        -- ^ baseURI
            -> FilePath    -- ^ object file .hi
            -> [FilePath]  -- ^ include paths
@@ -45,8 +48,16 @@ main =
       do objs <- getArgs
          withPlugins $ \plugins ->
              do mapM_ (\obj -> loadPlugin_ plugins baseURI obj []) objs
-                serve plugins "clck" ["ViewPage"]
-                serve plugins "my" ["MyURL"]
+                simpleHTTP nullConf $
+                          do paths <- (map Text.pack . rqPaths) <$> askRq
+                             case paths of
+                               (p : ps) ->
+                                   do e <- liftIO $ serve plugins p ps
+                                      case e of
+                                        (Left e) -> notFound $ toResponse e
+                                        (Right sp) -> sp
+                               _ -> notFound (toResponse ())
+--                serve plugins "my" ["MyURL"]
 
 {-
 main :: IO ()
