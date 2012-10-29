@@ -3,6 +3,7 @@
 module ClckPlugin where
 
 import Core
+import Web.Plugin.Core
 import Control.Monad       (foldM)
 import Control.Monad.Trans (liftIO)
 import Data.Acid
@@ -68,6 +69,6 @@ clckPlugin = Plugin
     , pluginToPathInfo = Text.pack . show
     }
 
-plugin :: Plugins Theme (ServerPart Response) -> Text -> IO ()
+plugin :: Plugins Theme (ServerPart Response) -> Text -> IO (Maybe Text)
 plugin plugins baseURI =
     do initPlugin plugins baseURI clckPlugin

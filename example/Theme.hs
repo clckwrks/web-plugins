@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleContexts, RankNTypes #-}
 module Theme where
 
-import Core (Plugins, getTheme)
+import Web.Plugin.Core (Plugins, getTheme)
 import Data.Text (Text)
 import HSP hiding (escape)
 import HSP.ServerPartT

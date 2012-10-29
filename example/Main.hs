@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import Core
+import Web.Plugin.Core
 import MyPlugin
 import ClckPlugin
 

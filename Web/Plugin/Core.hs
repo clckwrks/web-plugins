@@ -1,35 +1,18 @@
 {-# LANGUAGE DeriveDataTypeable, FlexibleContexts, FlexibleInstances, GeneralizedNewtypeDeriving, MultiParamTypeClasses, RecordWildCards, TemplateHaskell, OverloadedStrings #-}
-module Core where
+module Web.Plugin.Core where
 
 import Control.Applicative
 import Control.Exception
-import Control.Concurrent.STM (STM, atomically)
-import Control.Concurrent.STM.TVar (TVar, newTVar, readTVar, writeTVar, modifyTVar')
-import Control.Monad       (foldM)
+import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM.TVar (TVar, newTVar, readTVar, modifyTVar')
 import Control.Monad.Trans (MonadIO(liftIO))
-import Control.Monad.State (MonadState, StateT, runStateT, get, put, modify)
-
-import Data.Acid
-import Data.Acid.Local
-import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8 as B
 import Data.Data
 import Data.Dynamic
-import Data.SafeCopy
-import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text.IO as Text
 import Data.Map  (Map)
 import qualified Data.Map as Map
 import Data.Monoid
-import HSP (XMLGenT, XML)
-
 import Data.Text (Text)
-
-type URLFn url = url -> [(Text, Text)] -> Text
-
-class ShowRoute m url where
-    getRouteFn :: m (URLFn url)
 
 data When
     = Always
@@ -74,9 +57,9 @@ destroyPlugins whn (Plugins ptv) =
        mapM_ (cleanup whn) pos
        return ()
     where
-      cleanup whn (Cleanup whn' action)
-          | isWhen whn whn' = action
-          | otherwise       = return ()
+      cleanup w (Cleanup w' action)
+          | isWhen w w' = action
+          | otherwise   = return ()
 
 -- | a bracketed combination of 'initPlugins' and 'destroyPlugins'. Takes care of passing the correct termination condition.
 withPlugins :: (Plugins theme m -> IO a) -> IO a
@@ -150,12 +133,11 @@ data Plugin url theme n = Plugin
     , pluginToPathInfo   :: url -> Text
     }
 
-initPlugin :: (Typeable url) => Plugins theme n -> Text -> Plugin url theme n -> IO ()
+initPlugin :: (Typeable url) => Plugins theme n -> Text -> Plugin url theme n -> IO (Maybe Text)
 initPlugin plugins baseURI (Plugin{..}) =
     do -- putStrLn $ "initializing " ++ (Text.unpack pluginName)
        addPluginRouteFn plugins pluginName (\u p -> baseURI <> "/" <> pluginToPathInfo u)
        pluginInit plugins
-       return ()
 
 ------------------------------------------------------------------------------
 -- serve
@@ -167,14 +149,3 @@ serve plugins@(Plugins tvp) prefix path =
        case Map.lookup prefix phs of
          Nothing  -> return $ Left  $ "Invalid plugin prefix: " ++ Text.unpack prefix
          (Just h) -> return $ Right $ (h plugins path)
-
-------------------------------------------------------------------------------
--- MonadRoute
-------------------------------------------------------------------------------
-
-class (Monad m) => MonadRoute m url where
-    askRouteFn :: m (url -> [(Text, Text)] -> Text)
-
-mkRouteFn :: (Show url) => Text -> Text -> URLFn url
-mkRouteFn baseURI prefix =
-    \url params -> baseURI <> "/" <>  prefix <> "/" <> Text.pack (show url)

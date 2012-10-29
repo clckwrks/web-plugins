@@ -1,0 +1,28 @@
+name:                web-plugin
+version:             0.1.0.0
+synopsis:            dynamic plugin system for web applications
+homepage:            http://www.happstack.com/
+license:             BSD3
+license-file:        LICENSE
+author:              Jeremy Shaw
+maintainer:          jeremy@n-heptane.com
+category:            Web
+build-type:          Simple
+cabal-version:       >=1.8
+
+library
+  exposed-modules:     Web.Plugin.Core
+  build-depends:       base ==4.5.*,
+                       stm ==2.4.*,
+                       mtl ==2.1.*,
+--                       acid-state ==0.8.*,
+                       bytestring ==0.9.*,
+--                       safecopy ==0.7.*,
+                       text ==0.11.*,
+                       containers ==0.4.*,
+--                       hsp ==0.7.*,
+--                       happstack-server ==7.0.*,
+--                       web-routes ==0.27.*,
+--                       web-routes-th ==0.22.*,
+                       plugins ==1.5.*
+--                       happstack-hsp ==7.1.*

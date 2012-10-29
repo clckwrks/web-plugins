@@ -3,7 +3,7 @@ module Main where
 
 import Control.Applicative ((<$>))
 import Control.Monad.Trans (MonadIO(liftIO))
-import Core
+import Web.Plugin.Core
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
@@ -17,7 +17,7 @@ import Theme
 -- Main
 ------------------------------------------------------------------------------
 
-loadPlugin :: Plugins Theme (ServerPart Response)
+loadPlugin :: Plugins theme a --  Theme (ServerPart Response)
            -> Text        -- ^ baseURI
            -> FilePath    -- ^ object file .hi
            -> [FilePath]  -- ^ include paths
@@ -28,9 +28,8 @@ loadPlugin plugins baseURI obj incs =
          (LoadFailure errs) -> return $ Just $ Text.pack $ unlines errs
          (LoadSuccess _module plugin) ->
              do plugin plugins baseURI
-                return Nothing
 
-loadPlugin_ :: Plugins Theme (ServerPart Response)
+loadPlugin_ :: Plugins theme a -- Theme (ServerPart Response)
            -> Text        -- ^ baseURI
            -> FilePath    -- ^ object file .hi
            -> [FilePath]  -- ^ include paths
@@ -41,7 +40,7 @@ loadPlugin_ plugins baseURI obj incs =
          Nothing -> return ()
          (Just e) -> error $ Text.unpack e
 
-loadTheme :: Plugins Theme (ServerPart Response)
+loadTheme :: Plugins theme a -- Theme (ServerPart Response)
           -> FilePath
           -> [FilePath]
           -> IO ()
