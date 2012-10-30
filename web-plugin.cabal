@@ -16,7 +16,7 @@ library
                        stm ==2.4.*,
                        mtl ==2.1.*,
 --                       acid-state ==0.8.*,
-                       bytestring ==0.9.*,
+--                       bytestring ==0.9.*,
 --                       safecopy ==0.7.*,
                        text ==0.11.*,
                        containers ==0.4.*,
