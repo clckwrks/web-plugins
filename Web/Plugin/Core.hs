@@ -137,7 +137,7 @@ data Plugin url theme n = Plugin
 initPlugin :: (Typeable url) => Plugins theme n -> Text -> Plugin url theme n -> IO (Maybe Text)
 initPlugin plugins baseURI (Plugin{..}) =
     do -- putStrLn $ "initializing " ++ (Text.unpack pluginName)
-       addPluginRouteFn plugins pluginName (\u p -> baseURI <> "/" <> pluginToPathInfo u)
+       addPluginRouteFn plugins pluginName (\u p -> baseURI <> "/" <> pluginName <> pluginToPathInfo u)
        pluginInit plugins
 
 ------------------------------------------------------------------------------
