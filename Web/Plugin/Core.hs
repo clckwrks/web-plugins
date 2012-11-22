@@ -29,34 +29,34 @@ data Cleanup = Cleanup When (IO ())
 
 type PluginName = Text
 
-data PluginsState theme n hook config ppm = PluginsState
-    { pluginsPreProcs   :: Map PluginName (Text -> ppm Text)
-    , pluginsHandler    :: Map PluginName (Plugins theme n hook config ppm -> [Text] -> n)
+data PluginsState theme n hook config st = PluginsState
+    { pluginsHandler    :: Map PluginName (Plugins theme n hook config st -> [Text] -> n)
     , pluginsOnShutdown :: [Cleanup]
     , pluginsRouteFn    :: Map PluginName Dynamic
     , pluginsTheme      :: Maybe theme
     , pluginsPostHooks  :: [hook]
     , pluginsConfig     :: config
+    , pluginsState      :: st
     }
 
 -- | we don't really want to give the Plugin unrestricted access to modify the PluginsState TVar. So we will use a newtype?
-newtype Plugins theme m hook config ppm = Plugins { ptv :: TVar (PluginsState theme m hook config ppm) }
+newtype Plugins theme m hook config st = Plugins { ptv :: TVar (PluginsState theme m hook config st) }
 
-initPlugins :: config -> IO (Plugins theme n hook config ppm)
-initPlugins config =
+initPlugins :: config -> st -> IO (Plugins theme n hook config st)
+initPlugins config st =
     do ptv <- atomically $ newTVar
-              (PluginsState { pluginsPreProcs   = Map.empty
-                            , pluginsHandler    = Map.empty
+              (PluginsState { pluginsHandler    = Map.empty
                             , pluginsOnShutdown = []
                             , pluginsRouteFn    = Map.empty
                             , pluginsTheme      = Nothing
                             , pluginsPostHooks  = []
                             , pluginsConfig     = config
+                            , pluginsState      = st
                             }
               )
        return (Plugins ptv)
 
-destroyPlugins :: When -> Plugins theme m hook config ppm -> IO ()
+destroyPlugins :: When -> Plugins theme m hook config st -> IO ()
 destroyPlugins whn (Plugins ptv) =
     do pos <- atomically $ pluginsOnShutdown <$> readTVar ptv
        mapM_ (cleanup whn) pos
@@ -67,37 +67,41 @@ destroyPlugins whn (Plugins ptv) =
           | otherwise   = return ()
 
 -- | a bracketed combination of 'initPlugins' and 'destroyPlugins'. Takes care of passing the correct termination condition.
-withPlugins :: config -> (Plugins theme m hook config ppm -> IO a) -> IO a
-withPlugins config action =
-    bracketOnError (initPlugins config)
+withPlugins :: config -> st -> (Plugins theme m hook config st -> IO a) -> IO a
+withPlugins config st action =
+    bracketOnError (initPlugins config st)
                    (destroyPlugins OnFailure)
                    (\p -> do r <- action p ; destroyPlugins OnNormal p; return r)
 
-addPreProc :: (MonadIO m) => Plugins theme n hook config ppm
-           -> Text
-           -> (Text -> ppm Text)
-           -> m ()
-addPreProc (Plugins tps) pname pp =
+-- * PluginsSt
+
+getPluginsSt :: (MonadIO m) => Plugins theme n hook config st -> m st
+getPluginsSt (Plugins tps) =
+    liftIO $ atomically $ pluginsState <$> readTVar tps
+
+putPluginsSt :: (MonadIO m) => Plugins theme n hook config st -> st -> m ()
+putPluginsSt (Plugins tps) st =
     liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
-              ps { pluginsPreProcs = Map.insert pname pp pluginsPreProcs }
+        ps { pluginsState = st }
 
-getPreProcs :: (MonadIO m) => Plugins theme n hook config ppm -> m (Map Text (Text -> ppm Text))
-getPreProcs (Plugins tvp) =
-    liftIO $ atomically $ pluginsPreProcs <$> readTVar tvp
+modifyPluginsSt :: (MonadIO m) => Plugins theme n hook config st -> (st -> st) -> m ()
+modifyPluginsSt (Plugins tps) f =
+    liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
+        ps { pluginsState = f pluginsState }
 
-addHandler :: (MonadIO m) => Plugins theme n hook config ppm -> Text -> (Plugins theme n hook config ppm -> [Text] -> n) -> m ()
+addHandler :: (MonadIO m) => Plugins theme n hook config st -> Text -> (Plugins theme n hook config st -> [Text] -> n) -> m ()
 addHandler (Plugins tps) pname ph =
     liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
               ps { pluginsHandler = Map.insert pname ph pluginsHandler }
 
 -- | add a new cleanup action to the top of the stack
-addCleanup :: (MonadIO m) => Plugins theme n hook config ppm -> When -> IO () -> m ()
+addCleanup :: (MonadIO m) => Plugins theme n hook config st -> When -> IO () -> m ()
 addCleanup (Plugins tps) when action =
     liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
         ps { pluginsOnShutdown = (Cleanup when action) : pluginsOnShutdown }
 
 addPostHook :: (MonadIO m) =>
-               Plugins theme n hook config ppm
+               Plugins theme n hook config st
             -> hook
             -> m ()
 addPostHook (Plugins tps) postHook =
@@ -105,13 +109,13 @@ addPostHook (Plugins tps) postHook =
               ps { pluginsPostHooks = postHook : pluginsPostHooks }
 
 getPostHooks :: (MonadIO m) =>
-               Plugins theme n hook config ppm
+               Plugins theme n hook config st
             -> m [hook]
 getPostHooks (Plugins tps) =
     liftIO $ atomically $ pluginsPostHooks <$> readTVar tps
 
 addPluginRouteFn :: (MonadIO m, Typeable url) =>
-                    Plugins theme n hook config ppm
+                    Plugins theme n hook config st
                  -> Text
                  -> (url -> [(Text, Maybe Text)] -> Text)
                  -> m ()
@@ -122,7 +126,7 @@ addPluginRouteFn (Plugins tpv) pluginName routeFn =
 
 
 getPluginRouteFn :: (MonadIO m, Typeable url) =>
-                    Plugins theme n hook config ppm
+                    Plugins theme n hook config st
                  -> Text
                  -> m (Maybe (url -> [(Text, Maybe Text)] -> Text))
 getPluginRouteFn (Plugins ptv) pluginName =
@@ -134,7 +138,7 @@ getPluginRouteFn (Plugins ptv) pluginName =
          (Just dyn) -> return $ fromDynamic dyn
 
 setTheme :: (MonadIO m) =>
-            Plugins theme n hook config ppm
+            Plugins theme n hook config st
          -> Maybe theme
          -> m ()
 setTheme (Plugins tps) theme =
@@ -142,30 +146,30 @@ setTheme (Plugins tps) theme =
               ps { pluginsTheme = theme }
 
 getTheme :: (MonadIO m) =>
-            Plugins theme n hook config ppm
+            Plugins theme n hook config st
          -> m (Maybe theme)
 getTheme (Plugins tvp) =
     liftIO $ atomically $ pluginsTheme <$> readTVar tvp
 
 getConfig :: (MonadIO m) =>
-             Plugins theme n hook config ppm
+             Plugins theme n hook config st
           -> m config
 getConfig (Plugins tvp) =
     liftIO $ atomically $ pluginsConfig <$> readTVar tvp
 
 -- | NOTE: it is possible to set the URL type incorrectly here and not get a type error. How can we fix that ?
-data Plugin url theme n hook config ppm = Plugin
+data Plugin url theme n hook config st = Plugin
     { pluginName         :: PluginName
-    , pluginInit         :: Plugins theme n hook config ppm -> IO (Maybe Text)
+    , pluginInit         :: Plugins theme n hook config st -> IO (Maybe Text)
     , pluginDepends      :: [Text]   -- ^ plugins which much be initialized before this one can be
     , pluginToPathInfo   :: url -> Text
     , pluginPostHook     :: hook
     }
 
 initPlugin :: (Typeable url) =>
-              Plugins theme n hook config ppm
+              Plugins theme n hook config st
            -> Text
-           -> Plugin url theme n hook config ppm
+           -> Plugin url theme n hook config st
            -> IO (Maybe Text)
 initPlugin plugins baseURI (Plugin{..}) =
     do -- putStrLn $ "initializing " ++ (Text.unpack pluginName)
@@ -177,14 +181,14 @@ initPlugin plugins baseURI (Plugin{..}) =
 -- serve
 ------------------------------------------------------------------------------
 
-serve :: Plugins theme n hook config ppm -> Text -> [Text] -> IO (Either String n)
+serve :: Plugins theme n hook config st -> Text -> [Text] -> IO (Either String n)
 serve plugins@(Plugins tvp) prefix path =
     do phs <- atomically $ pluginsHandler <$> readTVar tvp
        case Map.lookup prefix phs of
          Nothing  -> return $ Left  $ "Invalid plugin prefix: " ++ Text.unpack prefix
          (Just h) -> return $ Right $ (h plugins path)
 
-loadPlugin :: Plugins theme a hook config ppm
+loadPlugin :: Plugins theme a hook config st
            -> Text        -- ^ baseURI
            -> FilePath    -- ^ object file .hi
            -> [FilePath]  -- ^ include paths
@@ -196,7 +200,7 @@ loadPlugin plugins baseURI obj incs =
          (LoadSuccess _module plugin) ->
              do plugin plugins baseURI
 
-loadPlugin_ :: Plugins theme a hook config ppm
+loadPlugin_ :: Plugins theme a hook config st
            -> Text        -- ^ baseURI
            -> FilePath    -- ^ object file .hi
            -> [FilePath]  -- ^ include paths
@@ -207,7 +211,7 @@ loadPlugin_ plugins baseURI obj incs =
          Nothing -> return ()
          (Just e) -> error $ Text.unpack e
 
-loadTheme :: Plugins theme a hook config ppm
+loadTheme :: Plugins theme a hook config st
           -> FilePath
           -> [FilePath]
           -> IO ()
