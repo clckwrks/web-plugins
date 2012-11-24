@@ -1,4 +1,4 @@
-name:                web-plugin
+name:                web-plugins
 version:             0.1.0.0
 synopsis:            dynamic plugin system for web applications
 homepage:            http://www.happstack.com/
@@ -11,7 +11,7 @@ build-type:          Simple
 cabal-version:       >=1.8
 
 library
-  exposed-modules:     Web.Plugin.Core
+  exposed-modules:     Web.Plugins.Core
   build-depends:       base ==4.5.*,
                        stm ==2.4.*,
                        mtl ==2.1.*,

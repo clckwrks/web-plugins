@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable, FlexibleContexts, FlexibleInstances, GeneralizedNewtypeDeriving, MultiParamTypeClasses, RecordWildCards, TemplateHaskell, OverloadedStrings #-}
-module Web.Plugin.Core where
+module Web.Plugins.Core where
 
 import Control.Applicative
 import Control.Exception
