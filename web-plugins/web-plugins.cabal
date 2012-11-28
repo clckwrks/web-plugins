@@ -5,7 +5,7 @@ homepage:            http://www.happstack.com/
 license:             BSD3
 license-file:        LICENSE
 author:              Jeremy Shaw
-maintainer:          jeremy@n-heptane.com
+maintainer:          Jeremy Shaw <jeremy@n-heptane.com>
 category:            Web
 build-type:          Simple
 cabal-version:       >=1.8

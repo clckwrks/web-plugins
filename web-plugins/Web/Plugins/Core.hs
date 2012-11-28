@@ -13,7 +13,7 @@ import Data.Map  (Map)
 import qualified Data.Map as Map
 import Data.Monoid
 import Data.Text (Text)
-import System.Plugins.Load
+-- import System.Plugins.Load
 
 data When
     = Always
@@ -187,7 +187,7 @@ serve plugins@(Plugins tvp) prefix path =
        case Map.lookup prefix phs of
          Nothing  -> return $ Left  $ "Invalid plugin prefix: " ++ Text.unpack prefix
          (Just h) -> return $ Right $ (h plugins path)
-
+{-
 loadPlugin :: Plugins theme a hook config st
            -> Text        -- ^ baseURI
            -> FilePath    -- ^ object file .hi
@@ -222,3 +222,4 @@ loadTheme plugins themeObj incs =
              error $ unlines errs
          (LoadSuccess _module theme) ->
              setTheme plugins (Just theme)
+-}
