@@ -10,6 +10,8 @@ module Web.Plugins.Core
      , withPlugins
      , getPluginsSt
      , putPluginsSt
+     , addPluginState
+     , getPluginState
      , modifyPluginsSt
      , addHandler
      , addCleanup
@@ -62,13 +64,14 @@ data Cleanup = Cleanup When (IO ())
 type PluginName = Text
 
 data PluginsState theme n hook config st = PluginsState
-    { pluginsHandler    :: Map PluginName (Plugins theme n hook config st -> [Text] -> n)
-    , pluginsOnShutdown :: [Cleanup]
-    , pluginsRouteFn    :: Map PluginName Dynamic
-    , pluginsTheme      :: Maybe theme
-    , pluginsPostHooks  :: [hook]
-    , pluginsConfig     :: config
-    , pluginsState      :: st
+    { pluginsHandler     :: Map PluginName (Plugins theme n hook config st -> [Text] -> n)
+    , pluginsOnShutdown  :: [Cleanup]
+    , pluginsRouteFn     :: Map PluginName Dynamic
+    , pluginsPluginState :: Map PluginName (TVar Dynamic)  -- ^ per-plugin state
+    , pluginsTheme       :: Maybe theme
+    , pluginsPostHooks   :: [hook]
+    , pluginsConfig      :: config
+    , pluginsState       :: st
     }
 
 -- | we don't really want to give the Plugin unrestricted access to modify the PluginsState TVar. So we will use a newtype?
@@ -80,13 +83,14 @@ initPlugins :: config -- ^ initial value for the 'config' field of 'PluginsState
             -> IO (Plugins theme n hook config st)
 initPlugins config st =
     do ptv <- atomically $ newTVar
-              (PluginsState { pluginsHandler    = Map.empty
-                            , pluginsOnShutdown = []
-                            , pluginsRouteFn    = Map.empty
-                            , pluginsTheme      = Nothing
-                            , pluginsPostHooks  = []
-                            , pluginsConfig     = config
-                            , pluginsState      = st
+              (PluginsState { pluginsHandler     = Map.empty
+                            , pluginsOnShutdown  = []
+                            , pluginsRouteFn     = Map.empty
+                            , pluginsPluginState = Map.empty
+                            , pluginsTheme       = Nothing
+                            , pluginsPostHooks   = []
+                            , pluginsConfig      = config
+                            , pluginsState       = st
                             }
               )
        return (Plugins ptv)
@@ -145,6 +149,33 @@ addHandler :: (MonadIO m) => Plugins theme n hook config st
 addHandler (Plugins tps) pname ph =
     liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
               ps { pluginsHandler = Map.insert pname ph pluginsHandler }
+
+-- | add a new plugin-local state
+addPluginState :: (MonadIO m, Typeable state) => Plugins theme n hook config st
+               -> Text -- plugin name
+               -> state
+               -> m ()
+addPluginState (Plugins tps) pname state =
+    liftIO $ atomically $
+           do stateTV <- newTVar (toDyn state)
+              modifyTVar' tps $ \ps@PluginsState{..} ->
+                    ps { pluginsPluginState = Map.insert pname stateTV pluginsPluginState }
+
+-- | Get the state for a particular plugin
+--
+-- per-plugin state is optional. This will return 'Nothing' if the
+-- plugin did not register any local state.
+getPluginState :: (MonadIO m, Typeable state) =>
+                  Plugins theme n hook config st
+               -> Text -- plugin name
+               -> m (Maybe state)
+getPluginState (Plugins ptv) pluginName =
+    do states <- liftIO $ atomically $ pluginsPluginState <$> readTVar ptv
+       case Map.lookup pluginName states of
+         Nothing -> return Nothing
+         (Just tvar) ->
+             do dyn <- liftIO $ atomically $ readTVar tvar
+                return $ fromDynamic dyn
 
 -- | add a new cleanup action to the top of the stack
 addCleanup :: (MonadIO m) => Plugins theme n hook config st -> When -> IO () -> m ()
