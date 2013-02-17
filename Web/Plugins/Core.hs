@@ -59,10 +59,20 @@ isWhen :: When -> When -> Bool
 isWhen Always _ = True
 isWhen x y = x == y
 
+-- | A 'Cleanup' is an 'IO' action to run when the server shuts
+-- down. The server can either shutdown normally or due to a
+-- failure. The 'When' parameter indicates when an action should run.
 data Cleanup = Cleanup When (IO ())
 
+-- | The 'PluginName' should uniquely identify a plugin -- though we
+-- currently have no way to enforce that.
 type PluginName = Text
 
+-- | The 'PluginsState' record holds all the record keeping
+-- information needed for loading, unloading, and invoking plugins. In
+-- theory you should not be modifying or inspecting this structure
+-- directly -- only calling the helper functions that modify or read
+-- it.
 data PluginsState theme n hook config st = PluginsState
     { pluginsHandler     :: Map PluginName (Plugins theme n hook config st -> [Text] -> n)
     , pluginsOnShutdown  :: [Cleanup]
@@ -74,10 +84,15 @@ data PluginsState theme n hook config st = PluginsState
     , pluginsState       :: st
     }
 
--- | we don't really want to give the Plugin unrestricted access to modify the PluginsState TVar. So we will use a newtype?
+-- | The 'Plugins' type is the handle to the plugins system. Generally
+-- you will have exactly one 'Plugins' value in your app.
+--
+-- see also 'withPlugins'
 newtype Plugins theme m hook config st = Plugins { ptv :: TVar (PluginsState theme m hook config st) }
 
 -- | initialize the plugins system
+--
+-- see also 'withPlugins'
 initPlugins :: config -- ^ initial value for the 'config' field of 'PluginsState'
             -> st     -- ^ initial value for the 'state' field of the 'PluginsState'
             -> IO (Plugins theme n hook config st)
@@ -96,7 +111,9 @@ initPlugins config st =
        return (Plugins ptv)
 
 -- | shutdown the plugins system
-destroyPlugins :: When -- ^ should be 'OnFailure' or 'OnNormal'
+--
+-- see also 'withPlugins'
+destroyPlugins :: When                           -- ^ should be 'OnFailure' or 'OnNormal'
                -> Plugins theme m hook config st -- ^ handle to the plugins
                -> IO ()
 destroyPlugins whn (Plugins ptv) =
@@ -121,7 +138,7 @@ withPlugins config st action =
 -- PluginsSt
 ------------------------------------------------------------------------------
 
--- | get the current st value from 'Plugins'
+-- | get the current @st@ value from 'Plugins'
 getPluginsSt :: (MonadIO m) => Plugins theme n hook config st
              -> m st
 getPluginsSt (Plugins tps) =
@@ -183,6 +200,7 @@ addCleanup (Plugins tps) when action =
     liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
         ps { pluginsOnShutdown = (Cleanup when action) : pluginsOnShutdown }
 
+-- | add a new post initialization hook
 addPostHook :: (MonadIO m) =>
                Plugins theme n hook config st
             -> hook
@@ -191,15 +209,19 @@ addPostHook (Plugins tps) postHook =
     liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
               ps { pluginsPostHooks = postHook : pluginsPostHooks }
 
+-- | get all the post initialization hooks
 getPostHooks :: (MonadIO m) =>
                Plugins theme n hook config st
             -> m [hook]
 getPostHooks (Plugins tps) =
     liftIO $ atomically $ pluginsPostHooks <$> readTVar tps
 
+-- | add the routing function for a plugin
+--
+-- see also: 'getPluginRouteFn'
 addPluginRouteFn :: (MonadIO m, Typeable url) =>
                     Plugins theme n hook config st
-                 -> Text
+                 -> PluginName
                  -> (url -> [(Text, Maybe Text)] -> Text)
                  -> m ()
 addPluginRouteFn (Plugins tpv) pluginName routeFn =
@@ -208,9 +230,12 @@ addPluginRouteFn (Plugins tpv) pluginName routeFn =
                   ps { pluginsRouteFn = Map.insert pluginName (toDyn routeFn) pluginsRouteFn }
 
 
+-- | get the plugin routing function for the named plugin
+--
+-- see also: 'addPluginRouteFn'
 getPluginRouteFn :: (MonadIO m, Typeable url) =>
                     Plugins theme n hook config st
-                 -> Text
+                 -> PluginName -- ^ name of plugin
                  -> m (Maybe (url -> [(Text, Maybe Text)] -> Text))
 getPluginRouteFn (Plugins ptv) pluginName =
     do -- liftIO $ putStrLn $ "looking up route function for " ++ Text.unpack pluginName
@@ -220,6 +245,7 @@ getPluginRouteFn (Plugins ptv) pluginName =
                        return Nothing
          (Just dyn) -> return $ fromDynamic dyn
 
+-- | set the current @theme@
 setTheme :: (MonadIO m) =>
             Plugins theme n hook config st
          -> Maybe theme
@@ -228,12 +254,14 @@ setTheme (Plugins tps) theme =
         liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
               ps { pluginsTheme = theme }
 
+-- | get the current @theme@
 getTheme :: (MonadIO m) =>
             Plugins theme n hook config st
          -> m (Maybe theme)
 getTheme (Plugins tvp) =
     liftIO $ atomically $ pluginsTheme <$> readTVar tvp
 
+-- | get the @config@ value from the 'Plugins' type
 getConfig :: (MonadIO m) =>
              Plugins theme n hook config st
           -> m config
@@ -244,14 +272,15 @@ getConfig (Plugins tvp) =
 data Plugin url theme n hook config st = Plugin
     { pluginName         :: PluginName
     , pluginInit         :: Plugins theme n hook config st -> IO (Maybe Text)
-    , pluginDepends      :: [Text]   -- ^ plugins which much be initialized before this one can be
+    , pluginDepends      :: [PluginName]   -- ^ plugins which much be initialized before this one can be
     , pluginToPathInfo   :: url -> Text
     , pluginPostHook     :: hook
     }
 
+-- | initialize a plugin
 initPlugin :: (Typeable url) =>
               Plugins theme n hook config st
-           -> Text
+           -> PluginName
            -> Plugin url theme n hook config st
            -> IO (Maybe Text)
 initPlugin plugins baseURI (Plugin{..}) =
@@ -259,7 +288,6 @@ initPlugin plugins baseURI (Plugin{..}) =
        addPluginRouteFn plugins pluginName (\u p -> baseURI <> "/" <> pluginName <> pluginToPathInfo u <> paramsToQueryString (map (\(k, v) -> (k, fromMaybe mempty v)) p))
        addPostHook plugins pluginPostHook
        pluginInit plugins
-
 
 paramsToQueryString :: [(Text, Text)] -> Text
 paramsToQueryString [] = mempty
@@ -303,9 +331,10 @@ paramsToQueryString ps = toStrictText $ "?" <> mconcat (intersperse "&" (map par
 -- serve
 ------------------------------------------------------------------------------
 
-serve :: Plugins theme n hook config st
-      -> Text
-      -> [Text]
+-- | serve requests using the 'Plugins' handle
+serve :: Plugins theme n hook config st -- ^ 'Plugins' handle
+      -> PluginName -- ^ name of the plugin to handle this request
+      -> [Text]     -- ^ unconsume path segments to pass to handler
       -> IO (Either String n)
 serve plugins@(Plugins tvp) prefix path =
     do phs <- atomically $ pluginsHandler <$> readTVar tvp
