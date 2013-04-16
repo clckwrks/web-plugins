@@ -1,5 +1,5 @@
 name:                web-plugins
-version:             0.2.1
+version:             0.2.2
 synopsis:            dynamic plugin system for web applications
 homepage:            http://www.happstack.com/
 license:             BSD3
@@ -18,7 +18,7 @@ source-repository head
 library
   exposed-modules:     Web.Plugins.Core
   build-depends:       base        > 4 && < 5,
-                       stm        == 2.4.*,
+                       stm        >= 2.3 && < 2.5,
                        mtl        == 2.1.*,
                        text       == 0.11.*,
                        containers >= 0.4 && < 0.6
