@@ -1,4 +1,189 @@
 {-# LANGUAGE DeriveDataTypeable, FlexibleContexts, FlexibleInstances, GeneralizedNewtypeDeriving, MultiParamTypeClasses, RecordWildCards, TemplateHaskell, OverloadedStrings #-}
+{- | @web-plugins@ is a very general purpose plugin system for web applications.
+
+It provides facilities for loading multiple plugins and a single
+theme. In the future, the @web-plugins-dynamic@ library will allow
+plugins and themes to be loaded and unloaded at runtime.
+
+A key aspect of @web-plugins@ is that all plugins for a particular system
+have the same type signature. This is what makes it possible to load
+new plugins at runtime.
+
+This plugin system is not tied to any particular web server framework
+or template engine.
+
+There are four steps to using @web-plugins@:
+
+ 1. initialize the plugins system
+
+ 2. initialize the individual plugins
+
+ 3. set the theme
+
+ 4. route incoming requests to the correct plugin
+
+To use @web-plugins@, you first initialize a 'Plugins' handle.
+
+The 'Plugins' handle is heavily parameterized:
+
+> newtype Plugins theme m hook config st = ...
+
+[@theme@] is (not suprisingly) the type for you theme.
+
+[@m@] is the monad that your plugin handlers will run in. (e.g., @ServerPart@)
+
+[@hook@] is additional actions that should be called after the plugins have been initialized
+
+[@config@] provides read-only configuration information
+
+[@st@] provides mutable state that is shared between all plugins. (There is a separate mechanism for plugin-local state.)
+
+The plugin system is typically started by using 'withPlugins'. Though,
+if needed, you can call 'initPlugins' and 'destroyPlugins' instead.
+
+The 'Plugin' record is used to create a plugin:
+
+@
+data Plugin url theme n hook config st = Plugin
+    { pluginName         :: PluginName
+    , pluginInit         :: Plugins theme n hook config st -> IO (Maybe Text)
+    , pluginDepends      :: [PluginName]   -- ^ plugins which much be initialized before this one can be
+    , pluginToPathInfo   :: url -> Text
+    , pluginPostHook     :: hook
+    }
+@
+
+You will note that it has the same type parameters as 'Plugins' plus an additional 'url' parameter.
+
+[@pluginName@] is a simple 'Text' value which should uniquely identify the plugin.
+
+[@pluginInit@] will be called automatically when the plugin is loaded.
+
+[@pluginDepends@] is a list of plugins which must be loaded before this plugin can be initialized.
+
+[@pluginToPathInfo@] is the function that is used to convert the 'url' type to an actual URL.
+
+[@pluginPostHook@] is the hook that you want called after the system has been initialized.
+
+A 'Plugin' is initialized using the 'initPlugin' function (which calls the 'pluginInit' field among other things).
+
+@
+-- | initialize a plugin
+initPlugin :: (Typeable url) =>
+              Plugins theme n hook config st    -- ^ 'Plugins' handle
+           -> Text                              -- ^ base URI to prepend to generated URLs
+           -> Plugin url theme n hook config st -- ^ 'Plugin' to initialize
+           -> IO (Maybe Text)                   -- ^ possible error message
+@
+
+A lot of the magic happens in the 'pluginInit' function in the
+'Plugin' record. Let's look at a simple example. We will use the
+following type aliases to parameterize the 'Plugins' and 'Plugin'
+type:
+
+@
+type ExamplePlugins    = Plugins    Theme (ServerPart Response) (IO ()) () ()
+type ExamplePlugin url = Plugin url Theme (ServerPart Response) (IO ()) () ()
+@
+
+Here is the initialization function for 'myPlugin':
+
+@
+myInit :: ExamplePlugins -> IO (Maybe Text)
+myInit plugins =
+    do (Just clckShowFn) <- getPluginRouteFn plugins (pluginName clckPlugin)
+       (Just myShowFn)   <- getPluginRouteFn plugins (pluginName myPlugin)
+       acid <- liftIO $ openLocalState MyState
+       addCleanup plugins OnNormal  (putStrLn "myPlugin: normal shutdown"  >> createCheckpointAndClose acid)
+       addCleanup plugins OnFailure (putStrLn "myPlugin: failure shutdown" >> closeAcidState acid)
+       addHandler plugins (pluginName myPlugin) (myPluginHandler acid clckShowFn myShowFn)
+       putStrLn "myInit completed."
+       return Nothing
+@
+
+There are a few things to note here:
+
+'getPluginRouteFn' is used to retrieve the the URL route showing
+function for various plugins. In this case, the plugin needs to
+generate routes for itself and also routes in the 'clckPlugin'.
+
+Next it opens up an 'AcidState'. It then registers two different
+cleanup functions. The 'OnNormal' cleanup will only be called if the
+system is shutdown normally. The 'OnFailure' will be called if the
+system is shutdown due to some error condition. If we wanted to
+perform the same shutdown procedure regardless of termination cause,
+we could use the 'Always' condition instead.
+
+the 'addHandler' then registers the function which route requests for
+this plugin:
+
+@
+addHandler :: MonadIO m =>
+              Plugins theme n hook config st
+            -> PluginName -- plugin name / prefix
+            -> (Plugins theme n hook config st -> [Text] -> n)
+            -> m ()
+@
+
+Each plugin should be registered using a unique prefix. When
+the handler is called it will be passed the 'Plugins' handle and a
+list of 'Text' values. In practice, the list 'Text' values is
+typically the unconsumed path segments from the URL.
+
+Setting the theme is done by calling the 'setTheme' function:
+
+@
+-- | set the current 'theme'
+setTheme :: (MonadIO m) =>
+            Plugins theme n hook config st
+         -> Maybe theme
+         -> m ()
+@
+
+Setting the theme to 'Nothing' will unload the theme but not load a new one.
+
+Incoming requests are routed to the various plugins via the 'serve' function:
+
+@
+-- | serve requests using the 'Plugins' handle
+serve :: Plugins theme n hook config st -- ^ 'Plugins' handle
+      -> PluginName -- ^ name of the plugin to handle this request
+      -> [Text]     -- ^ unconsume path segments to pass to handler
+      -> IO (Either String n)
+@
+
+The expected usage is that you are going to have request with a url such as:
+
+> /my/extra/path/segments
+
+The code will treat the first path segment as the plugin to be called and pass in the remaining segments as the @[Text]@ arguments:
+
+> serve plugins "my" ["extra","path","segments"]
+
+the 'serve' function itself knows nothing about the web -- it is
+framework agnostic. Here is a simple @main@ function that shows how to
+tie everything together:
+
+> main :: IO ()
+> main =
+>   withPlugins () () $ \plugins ->
+>     do initPlugin plugins "" clckPlugin
+>        initPlugin plugins "" myPlugin
+>        setTheme plugins (Just theme)
+>        hooks <- getPostHooks plugins
+>        sequence_ hooks
+>        simpleHTTP nullConf $ path $ \p -> do
+>          ps <- fmap rqPaths askRq
+>          r <- liftIO $ serve plugins p (map Text.pack ps)
+>          case r of
+>            (Left e) -> internalServerError $ toResponse e
+>            (Right sp) -> sp
+
+In this example, we do not use the @config@ or @st@ parameters so we just set them to @()@.
+
+Note that we are responsible for calling the hooks after we have initialized all the plugins.
+
+-}
 module Web.Plugins.Core
      ( When(..)
      , Cleanup(..)
@@ -159,8 +344,9 @@ modifyPluginsSt (Plugins tps) f =
         ps { pluginsState = f pluginsState }
 
 -- | add a new route handler
-addHandler :: (MonadIO m) => Plugins theme n hook config st
-           -> Text -- ^ prefix which this route handles
+addHandler :: (MonadIO m) =>
+              Plugins theme n hook config st
+           -> PluginName -- ^ prefix which this route handles
            -> (Plugins theme n hook config st -> [Text] -> n)
            -> m ()
 addHandler (Plugins tps) pname ph =
@@ -169,7 +355,7 @@ addHandler (Plugins tps) pname ph =
 
 -- | add a new plugin-local state
 addPluginState :: (MonadIO m, Typeable state) => Plugins theme n hook config st
-               -> Text -- plugin name
+               -> PluginName -- plugin name
                -> state
                -> m ()
 addPluginState (Plugins tps) pname state =
@@ -279,10 +465,10 @@ data Plugin url theme n hook config st = Plugin
 
 -- | initialize a plugin
 initPlugin :: (Typeable url) =>
-              Plugins theme n hook config st
-           -> PluginName
-           -> Plugin url theme n hook config st
-           -> IO (Maybe Text)
+              Plugins theme n hook config st    -- ^ 'Plugins' handle
+           -> Text                              -- ^ base URI to prepend to generated URLs
+           -> Plugin url theme n hook config st -- ^ 'Plugin' to initialize
+           -> IO (Maybe Text)                   -- ^ possible error message
 initPlugin plugins baseURI (Plugin{..}) =
     do -- putStrLn $ "initializing " ++ (Text.unpack pluginName)
        addPluginRouteFn plugins pluginName (\u p -> baseURI <> "/" <> pluginName <> pluginToPathInfo u <> paramsToQueryString (map (\(k, v) -> (k, fromMaybe mempty v)) p))
