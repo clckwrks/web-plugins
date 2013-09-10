@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleContexts, RankNTypes #-}
 module Theme where
 
-import Web.Plugin.Core (Plugins, getTheme)
+import Web.Plugins.Core (Plugins, getTheme)
 import Data.Text (Text)
 import HSP hiding (escape)
 import HSP.ServerPartT
@@ -23,7 +23,7 @@ data Theme = Theme
 themeTemplate :: ( EmbedAsChild (ServerPartT IO) headers
                  , EmbedAsChild (ServerPartT IO) body
                  ) =>
-                 Plugins Theme (ServerPart Response)
+                 Plugins Theme (ServerPart Response) (IO ()) () ()
               -> Text
               -> headers
               -> body

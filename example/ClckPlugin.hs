@@ -1,9 +1,8 @@
-{-# LANGUAGE DeriveDataTypeable, TemplateHaskell, OverloadedStrings #-}
-{-# OPTIONS_GHC -F -pgmFtrhsx #-}
+{-# LANGUAGE DeriveDataTypeable, TemplateHaskell, OverloadedStrings, QuasiQuotes #-}
 module ClckPlugin where
 
 import Core
-import Web.Plugin.Core
+import Web.Plugins.Core
 import Control.Monad       (foldM)
 import Control.Monad.Trans (liftIO)
 import Data.Acid
@@ -19,6 +18,7 @@ import HSP
 import Web.Routes
 import Web.Routes.TH
 import Theme
+import Language.Haskell.HSX.QQ
 
 ------------------------------------------------------------------------------
 -- ClckPlugin
@@ -37,38 +37,30 @@ $(deriveSafeCopy 0 'base ''ClckState)
 $(makeAcidic ''ClckState [])
 
 clckHandler :: URLFn ClckURL
-            -> Plugins Theme (ServerPart Response)
+            -> ExamplePlugins
             -> [Text]
             -> ServerPart Response
 clckHandler showRoutFn plugins paths =
     case parseSegments fromPathSegments paths of
       (Left e) -> notFound $ toResponse (show e)
       (Right ViewPage) ->
-          do pps <- liftIO $ getPreProcs plugins
-             txt <- liftIO $ foldM (\txt pp -> pp txt) "I like cheese." (Map.elems pps)
-             themeTemplate plugins "cheese." () <p><% txt %></p>
---             ok $ toResponse txt
+          themeTemplate plugins "cheese." () [hsx| <p>plugins are cool.</p> |]
 
-clckPreProcessor :: URLFn ClckURL
-                 -> (Text -> IO Text)
-clckPreProcessor showFnClckURL txt =
-    return (Text.replace "like" "love" txt)
-
-clckInit :: Plugins Theme (ServerPart Response) -> IO (Maybe Text)
+clckInit :: ExamplePlugins -> IO (Maybe Text)
 clckInit plugins =
     do (Just clckShowFn) <- getPluginRouteFn plugins "clck"
-       addPreProc plugins "clck" (clckPreProcessor clckShowFn)
        addHandler plugins "clck" (clckHandler clckShowFn)
        return Nothing
 
-clckPlugin :: Plugin ClckURL Theme (ServerPart Response)
+clckPlugin :: ExamplePlugin ClckURL
 clckPlugin = Plugin
     { pluginName       = "clck"
     , pluginInit       = clckInit
     , pluginDepends    = []
-    , pluginToPathInfo = Text.pack . show
+    , pluginToPathInfo = toPathInfo
+    , pluginPostHook   = putStrLn "clck post hook."
     }
 
-plugin :: Plugins Theme (ServerPart Response) -> Text -> IO (Maybe Text)
+plugin :: ExamplePlugins -> Text -> IO (Maybe Text)
 plugin plugins baseURI =
     do initPlugin plugins baseURI clckPlugin

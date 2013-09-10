@@ -1,0 +1,26 @@
+name:                web-plugins-example
+version:             0.1.0.0
+synopsis:            A demo of the web-plugins system
+license:             BSD3
+license-file:        LICENSE
+author:              Jeremy Shaw
+maintainer:          jeremy@n-heptane.com
+category:            Web
+build-type:          Simple
+cabal-version:       >=1.8
+
+executable web-plugins-example
+  main-is:             Main.hs
+  build-depends:       acid-state       == 0.11.*,
+                       base             >= 4.6 && < 5,
+                       containers       == 0.5.*,
+                       happstack-hsp    == 7.2.*,
+                       happstack-server == 7.3.*,
+                       hsx2hs           == 0.13.*,
+                       mtl              == 2.1.*,
+                       hsp              == 0.9.*,
+                       safecopy         == 0.8.*,
+                       text             == 0.11.*,
+                       web-plugins      == 0.2.*,
+                       web-routes       == 0.27.*,
+                       web-routes-th    == 0.22.*

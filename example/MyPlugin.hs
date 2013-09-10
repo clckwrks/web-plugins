@@ -2,7 +2,7 @@
 module MyPlugin where
 
 import Core
-import Web.Plugin.Core
+import Web.Plugins.Core
 import ClckPlugin
 import Control.Monad.Trans (liftIO)
 import Data.Acid
@@ -13,6 +13,8 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Happstack.Server
 import Theme
+import Web.Routes
+import Web.Routes.TH
 
 ------------------------------------------------------------------------------
 -- MyPlugin
@@ -26,8 +28,9 @@ $(deriveSafeCopy 0 'base ''MyState)
 $(makeAcidic ''MyState [])
 
 data MyURL
-    = MyURL
+    = MyUrl
     deriving (Eq, Ord, Show, Read, Data, Typeable)
+$(derivePathInfo ''MyURL)
 {-
 data MyPluginsState = MyPluginsState
     { myAcid :: AcidState MyState
@@ -49,35 +52,35 @@ Things to do:
 
 -}
 
-myInit :: Plugins Theme (ServerPart Response) -> IO (Maybe Text)
+myInit :: ExamplePlugins -> IO (Maybe Text)
 myInit plugins =
-    do (Just clckShowFn) <- getPluginRouteFn plugins "clck"
-       (Just myShowFn)   <- getPluginRouteFn plugins "my"
+    do (Just clckShowFn) <- getPluginRouteFn plugins (pluginName clckPlugin)
+       (Just myShowFn)   <- getPluginRouteFn plugins (pluginName myPlugin)
        acid <- liftIO $ openLocalState MyState
-       addCleanup plugins OnNormal  ({- putStrLn "myPlugin: normal shutdown"  >> -} createCheckpointAndClose acid)
-       addCleanup plugins OnFailure ({- putStrLn "myPlugin: failure shutdown" >> -} closeAcidState acid)
-       addPreProc plugins "my" (myPreProcessor clckShowFn myShowFn)
+       addCleanup plugins OnNormal  (putStrLn "myPlugin: normal shutdown"  >> createCheckpointAndClose acid)
+       addCleanup plugins OnFailure (putStrLn "myPlugin: failure shutdown" >> closeAcidState acid)
        addHandler plugins "my" (myPluginHandler acid clckShowFn myShowFn)
-       -- putStrLn "myInit completed."
+       putStrLn "myInit completed."
        return Nothing
 
 myPluginHandler :: AcidState MyState
                 -> URLFn ClckURL
                 -> URLFn MyURL
-                -> Plugins Theme (ServerPart Response)
+                -> ExamplePlugins
                 -> [Text]
                 -> ServerPart Response
 myPluginHandler _ _ _ _ _ =
     ok $ toResponse ("My plugin handler" :: Text)
 
-myPlugin :: Plugin MyURL Theme (ServerPart Response)
+myPlugin :: ExamplePlugin MyURL
 myPlugin = Plugin
     { pluginName         = "my"
     , pluginInit         = myInit
     , pluginDepends      = ["clck"]
-    , pluginToPathInfo   = Text.pack . show
+    , pluginToPathInfo   = toPathInfo
+    , pluginPostHook     = putStrLn "my post hook."
     }
 
-plugin :: Plugins Theme (ServerPart Response) -> Text -> IO (Maybe Text)
+plugin :: ExamplePlugins -> Text -> IO (Maybe Text)
 plugin plugins baseURI =
     do initPlugin plugins baseURI myPlugin
