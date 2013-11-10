@@ -241,7 +241,7 @@ data When
       deriving (Eq, Ord, Show)
 
 isWhen :: When -> When -> Bool
-isWhen Always _ = True
+isWhen _ Always = True
 isWhen x y = x == y
 
 -- | A 'Cleanup' is an 'IO' action to run when the server shuts
