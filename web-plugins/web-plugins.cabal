@@ -1,5 +1,5 @@
 name:                web-plugins
-version:             0.2.6
+version:             0.2.6.1
 synopsis:            dynamic plugin system for web applications
 homepage:            http://www.happstack.com/
 license:             BSD3
@@ -11,9 +11,9 @@ build-type:          Simple
 cabal-version:       >=1.8
 
 source-repository head
-    type:     darcs
+    type:     git
     subdir:   web-plugins
-    location: http://hub.darcs.net/stepcut/web-plugins
+    location: git://github.com/clckwrks/web-plugins.git
 
 library
   exposed-modules:     Web.Plugins.Core
