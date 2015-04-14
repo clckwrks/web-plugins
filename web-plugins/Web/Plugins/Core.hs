@@ -488,7 +488,7 @@ paramsToQueryString ps = toStrictText $ "?" <> mconcat (intersperse "&" (map par
       isDigitChar c    = (c >= '0' && c <= '9')
 
       isOk :: Char -> Bool
-      isOk c = isAlphaChar c || isDigitChar c || c `elem` ":@$-_.~"
+      isOk c = isAlphaChar c || isDigitChar c || elem c (":@$-_.~" :: String)
 
       escapeChar c
           | c == ' '  = singleton '+'
