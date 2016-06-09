@@ -1,6 +1,9 @@
 name:                web-plugins
 version:             0.2.9
 synopsis:            dynamic plugin system for web applications
+description:         This provides a simple framework for defining plugins for a web application.
+                     It is designed with the requirement that plugins can be loaded into a running
+                     web application with out having to know about the plugin in advance.
 homepage:            https://github.com/clckwrks/web-plugins
 license:             BSD3
 license-file:        LICENSE
