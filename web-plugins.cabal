@@ -1,5 +1,5 @@
 name:                web-plugins
-version:             0.2.9
+version:             0.2.9.1
 synopsis:            dynamic plugin system for web applications
 description:         This provides a simple framework for defining plugins for a web application.
                      It is designed with the requirement that plugins can be loaded into a running
@@ -21,7 +21,7 @@ source-repository head
 library
   exposed-modules:     Web.Plugins.Core
   build-depends:       base        > 4    && < 5,
-                       stm        >= 2.3  && < 2.5,
+                       stm        >= 2.3  && < 2.6,
                        mtl        >= 2.1  && < 2.3,
                        text       >= 0.11 && < 1.3,
-                       containers >= 0.4  && < 0.6
+                       containers >= 0.4  && < 0.7
