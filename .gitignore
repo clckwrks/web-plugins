@@ -1,0 +1,9 @@
+*~
+result
+.cabal-sandbox
+_state
+dist
+dist-newstyle
+cabal.sandbox.config
+example/state
+.ghc.environment.*

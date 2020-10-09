@@ -77,7 +77,7 @@ myPlugin = Plugin
     { pluginName         = "my"
     , pluginInit         = myInit
     , pluginDepends      = ["clck"]
-    , pluginToPathInfo   = toPathInfo
+    , pluginToPathInfo   = toPathSegments
     , pluginPostHook     = putStrLn "my post hook."
     }
 

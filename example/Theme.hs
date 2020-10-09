@@ -12,7 +12,7 @@ type ThemeName = Text
 
 data Theme = Theme
     { themeName      :: ThemeName
-    , _themeTemplate :: ( EmbedAsChild (ServerPartT IO) headers
+    , _themeTemplate :: forall headers body. ( EmbedAsChild (ServerPartT IO) headers
                         , EmbedAsChild (ServerPartT IO) body) =>
                        Text    -- ^ page title
                      -> headers -- ^ extra elements to add to \<head\>

@@ -57,7 +57,7 @@ clckPlugin = Plugin
     { pluginName       = "clck"
     , pluginInit       = clckInit
     , pluginDepends    = []
-    , pluginToPathInfo = toPathInfo
+    , pluginToPathInfo = toPathSegments
     , pluginPostHook   = putStrLn "clck post hook."
     }
 

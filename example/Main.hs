@@ -1,4 +1,4 @@
-{-# LANGUAGE QuasiQuotes, OverloadedStrings #-}
+{-# LANGUAGE FlexibleInstances, MultiParamTypeClasses, QuasiQuotes, OverloadedStrings #-}
 module Main where
 
 import Control.Monad (msum)
@@ -9,6 +9,7 @@ import ClckPlugin
 import Happstack.Server
 import Happstack.Server.HSP.HTML
 import qualified Data.Text as Text
+import qualified Data.Text.Lazy as LazyText
 import DefaultTheme (theme)
 import Theme (themeTemplate)
 import Language.Haskell.HSX.QQ (hsx)
@@ -28,6 +29,11 @@ main =
        hooks <- getPostHooks plugins
        sequence_ hooks
        simpleHTTP nullConf (route plugins)
+
+instance EmbedAsAttr (ServerPartT IO) (Attr LazyText.Text (IO Text.Text)) where
+  asAttr (n := v) =
+    do v' <- XMLGenT (liftIO v)
+       asAttr (n := v)
 
 route plugins = msum
    [ nullDir >> do

@@ -45,11 +45,11 @@ The 'Plugin' record is used to create a plugin:
 
 @
 data Plugin url theme n hook config st = Plugin
-    { pluginName         :: PluginName
-    , pluginInit         :: Plugins theme n hook config st -> IO (Maybe Text)
-    , pluginDepends      :: [PluginName]   -- ^ plugins which much be initialized before this one can be
-    , pluginToPathInfo   :: url -> Text
-    , pluginPostHook     :: hook
+    { pluginName           :: PluginName
+    , pluginInit           :: Plugins theme n hook config st -> IO (Maybe Text)
+    , pluginDepends        :: [PluginName]   -- ^ plugins which much be initialized before this one can be
+    , pluginToPathSegments :: url -> Text
+    , pluginPostHook       :: hook
     }
 @
 
@@ -61,7 +61,7 @@ You will note that it has the same type parameters as 'Plugins' plus an addition
 
 [@pluginDepends@] is a list of plugins which must be loaded before this plugin can be initialized.
 
-[@pluginToPathInfo@] is the function that is used to convert the 'url' type to an actual URL.
+[@pluginToPathSegments@] is the function that is used to convert the 'url' type to the URL path segments
 
 [@pluginPostHook@] is the hook that you want called after the system has been initialized.
 
@@ -190,6 +190,9 @@ module Web.Plugins.Core
      , PluginName
      , PluginsState(..)
      , Plugins(..)
+     , Rewrite(..)
+     , RewriteIncoming
+     , RewriteOutgoing
      , initPlugins
      , destroyPlugins
      , withPlugins
@@ -204,6 +207,8 @@ module Web.Plugins.Core
      , getPostHooks
      , addPluginRouteFn
      , getPluginRouteFn
+     , getRewriteFilter
+     , setRewriteFilter
      , setTheme
      , getTheme
      , getConfig
@@ -217,6 +222,8 @@ import Control.Exception      (bracketOnError)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (TVar, newTVar, readTVar, modifyTVar')
 import Control.Monad.Trans    (MonadIO(liftIO))
+import Data.Binary.Builder    (toLazyByteString)
+import qualified Data.ByteString.Lazy as BS
 import Data.Char              (ord)
 import Data.Data              (Data, Typeable)
 import Data.Dynamic           (Dynamic, toDyn, fromDynamic)
@@ -229,8 +236,10 @@ import Data.Monoid            ((<>), mempty, mconcat)
 import Data.String            (fromString)
 import Data.Text              (Text)
 import qualified Data.Text    as T
+import Data.Text.Encoding     (decodeUtf8)
 import Data.Text.Lazy         (toStrict)
 import Data.Text.Lazy.Builder (Builder, fromText, singleton, toLazyText)
+import Network.HTTP.Types     (encodePathSegments)
 import Numeric                (showIntAtBase)
 
 -- | 'When' indicates when a clean up action should be run
@@ -253,6 +262,18 @@ data Cleanup = Cleanup When (IO ())
 -- currently have no way to enforce that.
 type PluginName = Text
 
+-- | Rewrite or Redirect
+data Rewrite
+  = Rewrite  -- ^ rewrite the URL internally -- does not affect the URL displayed to the user
+  | Redirect -- ^ perform a 303 redirect to a different URL
+  deriving (Eq, Ord, Read, Show, Data, Typeable)
+
+-- | rewrite the URL from a Request before routing it
+type RewriteIncoming = IO ([Text] -> [(Text, Maybe Text)] -> (Rewrite, [Text], [(Text, Maybe Text)]))
+
+-- | rewrite a URL that is going to end up in a HTML document or other output
+type RewriteOutgoing = IO ([Text] -> [(Text, Maybe Text)] -> ([Text], [(Text, Maybe Text)]))
+
 -- | The 'PluginsState' record holds all the record keeping
 -- information needed for loading, unloading, and invoking plugins. In
 -- theory you should not be modifying or inspecting this structure
@@ -261,12 +282,13 @@ type PluginName = Text
 data PluginsState theme n hook config st = PluginsState
     { pluginsHandler     :: Map PluginName (Plugins theme n hook config st -> [Text] -> n)
     , pluginsOnShutdown  :: [Cleanup]
-    , pluginsRouteFn     :: Map PluginName Dynamic
+    , pluginsRouteFn     :: Map PluginName (Text, Dynamic) -- ^ baseURI, url -> [Text]
     , pluginsPluginState :: Map PluginName (TVar Dynamic)  -- ^ per-plugin state
     , pluginsTheme       :: Maybe theme
     , pluginsPostHooks   :: [hook]
     , pluginsConfig      :: config
     , pluginsState       :: st
+    , pluginsRewrite     :: Maybe (RewriteIncoming, RewriteOutgoing)
     }
 
 -- | The 'Plugins' type is the handle to the plugins system. Generally
@@ -291,6 +313,7 @@ initPlugins config st =
                             , pluginsPostHooks   = []
                             , pluginsConfig      = config
                             , pluginsState       = st
+                            , pluginsRewrite     = Nothing
                             }
               )
        return (Plugins ptv)
@@ -408,13 +431,13 @@ getPostHooks (Plugins tps) =
 addPluginRouteFn :: (MonadIO m, Typeable url) =>
                     Plugins theme n hook config st
                  -> PluginName
-                 -> (url -> [(Text, Maybe Text)] -> Text)
+                 -> Text -- ^ baseURI
+                 -> (url -> [Text]) -- ^ url to path segments
                  -> m ()
-addPluginRouteFn (Plugins tpv) pluginName routeFn =
+addPluginRouteFn (Plugins tpv) pluginName baseURI routeFn =
     liftIO $ do -- putStrLn $ "Adding route for " ++ Text.unpack pluginName
                 atomically $ modifyTVar' tpv $ \ps@PluginsState{..} ->
-                  ps { pluginsRouteFn = Map.insert pluginName (toDyn routeFn) pluginsRouteFn }
-
+                  ps { pluginsRouteFn = Map.insert pluginName (baseURI, (toDyn routeFn)) pluginsRouteFn }
 
 -- | get the plugin routing function for the named plugin
 --
@@ -425,11 +448,22 @@ getPluginRouteFn :: (MonadIO m, Typeable url) =>
                  -> m (Maybe (url -> [(Text, Maybe Text)] -> Text))
 getPluginRouteFn (Plugins ptv) pluginName =
     do -- liftIO $ putStrLn $ "looking up route function for " ++ Text.unpack pluginName
-       routeFns <- liftIO $ atomically $ pluginsRouteFn <$> readTVar ptv
-       case Map.lookup pluginName routeFns of
+       ps <- liftIO $ atomically $ readTVar ptv
+       case Map.lookup pluginName (pluginsRouteFn ps) of
          Nothing -> do -- liftIO $ putStrLn "oops, route not found."
-                       return Nothing
-         (Just dyn) -> return $ fromDynamic dyn
+                       pure Nothing
+         (Just (baseURI, dyn)) ->
+           case fromDynamic dyn of
+             Nothing       -> pure Nothing
+             (Just showFn) ->
+               do f <- case pluginsRewrite ps of
+                         Nothing              -> pure $ \u p -> (u, p)
+                         (Just (_, rewriteOutgoingFn)) ->
+                           do liftIO $ rewriteOutgoingFn
+
+                  pure $ Just $ \u p ->
+                    let (pathSegments, params) = f (pluginName : (showFn u)) p
+                    in baseURI <> (decodeUtf8 $ BS.toStrict $ toLazyByteString $ encodePathSegments pathSegments)  <> paramsToQueryString (map (\(k, v) -> (k, fromMaybe mempty v)) params)
 
 -- | set the current @theme@
 setTheme :: (MonadIO m) =>
@@ -454,13 +488,27 @@ getConfig :: (MonadIO m) =>
 getConfig (Plugins tvp) =
     liftIO $ atomically $ pluginsConfig <$> readTVar tvp
 
+setRewriteFilter :: (MonadIO m) =>
+                    Plugins theme n hook config st
+                 -> Maybe (RewriteIncoming, RewriteOutgoing)
+                 -> m ()
+setRewriteFilter (Plugins tps) f =
+  liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
+    ps { pluginsRewrite = f }
+
+getRewriteFilter :: (MonadIO m) =>
+                    Plugins theme n hook config st
+                 -> m (Maybe (RewriteIncoming, RewriteOutgoing))
+getRewriteFilter (Plugins tps) =
+  liftIO $ atomically $ fmap pluginsRewrite $ readTVar tps
+
 -- | NOTE: it is possible to set the URL type incorrectly here and not get a type error. How can we fix that ?
 data Plugin url theme n hook config st = Plugin
-    { pluginName         :: PluginName
-    , pluginInit         :: Plugins theme n hook config st -> IO (Maybe Text)
-    , pluginDepends      :: [PluginName]   -- ^ plugins which much be initialized before this one can be
-    , pluginToPathInfo   :: url -> Text
-    , pluginPostHook     :: hook
+    { pluginName           :: PluginName
+    , pluginInit           :: Plugins theme n hook config st -> IO (Maybe Text)
+    , pluginDepends        :: [PluginName]  -- ^ plugins which much be initialized before this one can be
+    , pluginToPathSegments :: url -> [Text] -- ^ convert url to URL path segments
+    , pluginPostHook       :: hook
     }
 
 -- | initialize a plugin
@@ -471,7 +519,7 @@ initPlugin :: (Typeable url) =>
            -> IO (Maybe Text)                   -- ^ possible error message
 initPlugin plugins baseURI (Plugin{..}) =
     do -- putStrLn $ "initializing " ++ (Text.unpack pluginName)
-       addPluginRouteFn plugins pluginName (\u p -> baseURI <> "/" <> pluginName <> pluginToPathInfo u <> paramsToQueryString (map (\(k, v) -> (k, fromMaybe mempty v)) p))
+       addPluginRouteFn plugins pluginName baseURI pluginToPathSegments
        addPostHook plugins pluginPostHook
        pluginInit plugins
 
@@ -523,7 +571,8 @@ serve :: Plugins theme n hook config st -- ^ 'Plugins' handle
       -> [Text]     -- ^ unconsume path segments to pass to handler
       -> IO (Either String n)
 serve plugins@(Plugins tvp) prefix path =
-    do phs <- atomically $ pluginsHandler <$> readTVar tvp
+    do ps <- atomically $ readTVar tvp
+       let phs = pluginsHandler ps
        case Map.lookup prefix phs of
          Nothing  -> return $ Left  $ "Invalid plugin prefix: " ++ Text.unpack prefix
          (Just h) -> return $ Right $ (h plugins path)
