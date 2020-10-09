@@ -207,8 +207,8 @@ module Web.Plugins.Core
      , getPostHooks
      , addPluginRouteFn
      , getPluginRouteFn
-     , getRewriteFilter
-     , setRewriteFilter
+     , getRewriteFn
+     , setRewriteFn
      , setTheme
      , getTheme
      , getConfig
@@ -288,7 +288,7 @@ data PluginsState theme n hook config st = PluginsState
     , pluginsPostHooks   :: [hook]
     , pluginsConfig      :: config
     , pluginsState       :: st
-    , pluginsRewrite     :: Maybe (RewriteIncoming, RewriteOutgoing)
+    , pluginsRewrite     :: Maybe (RewriteIncoming, RewriteOutgoing) -- ^ functions rewrite the incoming and outgoing URLs
     }
 
 -- | The 'Plugins' type is the handle to the plugins system. Generally
@@ -488,18 +488,18 @@ getConfig :: (MonadIO m) =>
 getConfig (Plugins tvp) =
     liftIO $ atomically $ pluginsConfig <$> readTVar tvp
 
-setRewriteFilter :: (MonadIO m) =>
-                    Plugins theme n hook config st
-                 -> Maybe (RewriteIncoming, RewriteOutgoing)
-                 -> m ()
-setRewriteFilter (Plugins tps) f =
+setRewriteFn :: (MonadIO m) =>
+                Plugins theme n hook config st
+             -> Maybe (RewriteIncoming, RewriteOutgoing)
+             -> m ()
+setRewriteFn (Plugins tps) f =
   liftIO $ atomically $ modifyTVar' tps $ \ps@PluginsState{..} ->
     ps { pluginsRewrite = f }
 
-getRewriteFilter :: (MonadIO m) =>
-                    Plugins theme n hook config st
-                 -> m (Maybe (RewriteIncoming, RewriteOutgoing))
-getRewriteFilter (Plugins tps) =
+getRewriteFn :: (MonadIO m) =>
+                Plugins theme n hook config st
+             -> m (Maybe (RewriteIncoming, RewriteOutgoing))
+getRewriteFn (Plugins tps) =
   liftIO $ atomically $ fmap pluginsRewrite $ readTVar tps
 
 -- | NOTE: it is possible to set the URL type incorrectly here and not get a type error. How can we fix that ?
@@ -566,6 +566,8 @@ paramsToQueryString ps = toStrictText $ "?" <> mconcat (intersperse "&" (map par
 ------------------------------------------------------------------------------
 
 -- | serve requests using the 'Plugins' handle
+--
+-- NOTE: 
 serve :: Plugins theme n hook config st -- ^ 'Plugins' handle
       -> PluginName -- ^ name of the plugin to handle this request
       -> [Text]     -- ^ unconsume path segments to pass to handler

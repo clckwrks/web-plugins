@@ -54,11 +54,11 @@ clckInit plugins =
 
 clckPlugin :: ExamplePlugin ClckURL
 clckPlugin = Plugin
-    { pluginName       = "clck"
-    , pluginInit       = clckInit
-    , pluginDepends    = []
-    , pluginToPathInfo = toPathSegments
-    , pluginPostHook   = putStrLn "clck post hook."
+    { pluginName           = "clck"
+    , pluginInit           = clckInit
+    , pluginDepends        = []
+    , pluginToPathSegments = toPathSegments
+    , pluginPostHook       = putStrLn "clck post hook."
     }
 
 plugin :: ExamplePlugins -> Text -> IO (Maybe Text)

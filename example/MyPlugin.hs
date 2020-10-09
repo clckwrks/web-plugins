@@ -74,11 +74,11 @@ myPluginHandler _ _ _ _ _ =
 
 myPlugin :: ExamplePlugin MyURL
 myPlugin = Plugin
-    { pluginName         = "my"
-    , pluginInit         = myInit
-    , pluginDepends      = ["clck"]
-    , pluginToPathInfo   = toPathSegments
-    , pluginPostHook     = putStrLn "my post hook."
+    { pluginName           = "my"
+    , pluginInit           = myInit
+    , pluginDepends        = ["clck"]
+    , pluginToPathSegments = toPathSegments
+    , pluginPostHook       = putStrLn "my post hook."
     }
 
 plugin :: ExamplePlugins -> Text -> IO (Maybe Text)
