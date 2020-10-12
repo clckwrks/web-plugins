@@ -228,6 +228,8 @@ import Data.Char              (ord)
 import Data.Data              (Data, Typeable)
 import Data.Dynamic           (Dynamic, toDyn, fromDynamic)
 import qualified Data.Text    as Text
+import Data.Text.Encoding (decodeUtf8With)
+import Data.Text.Encoding.Error (lenientDecode)
 import Data.List              (intersperse)
 import Data.Map               (Map)
 import qualified Data.Map     as Map
@@ -265,14 +267,14 @@ type PluginName = Text
 -- | Rewrite or Redirect
 data Rewrite
   = Rewrite  -- ^ rewrite the URL internally -- does not affect the URL displayed to the user
-  | Redirect -- ^ perform a 303 redirect to a different URL
+  | Redirect (Maybe Text) -- ^ perform a 303 redirect to a different URL
   deriving (Eq, Ord, Read, Show, Data, Typeable)
 
 -- | rewrite the URL from a Request before routing it
-type RewriteIncoming = IO ([Text] -> [(Text, Maybe Text)] -> (Rewrite, [Text], [(Text, Maybe Text)]))
+type RewriteIncoming = IO ([Text] -> [(Text, Maybe Text)] -> Maybe (Rewrite, [Text], [(Text, Maybe Text)]))
 
 -- | rewrite a URL that is going to end up in a HTML document or other output
-type RewriteOutgoing = IO ([Text] -> [(Text, Maybe Text)] -> ([Text], [(Text, Maybe Text)]))
+type RewriteOutgoing = IO ([Text] -> [(Text, Maybe Text)] -> Maybe ([Text], [(Text, Maybe Text)]))
 
 -- | The 'PluginsState' record holds all the record keeping
 -- information needed for loading, unloading, and invoking plugins. In
@@ -449,21 +451,28 @@ getPluginRouteFn :: (MonadIO m, Typeable url) =>
 getPluginRouteFn (Plugins ptv) pluginName =
     do -- liftIO $ putStrLn $ "looking up route function for " ++ Text.unpack pluginName
        ps <- liftIO $ atomically $ readTVar ptv
+       -- check if there is a plugin with this prefix
        case Map.lookup pluginName (pluginsRouteFn ps) of
          Nothing -> do -- liftIO $ putStrLn "oops, route not found."
                        pure Nothing
          (Just (baseURI, dyn)) ->
+           -- extract the URL show function for this plugin
            case fromDynamic dyn of
              Nothing       -> pure Nothing
              (Just showFn) ->
+               -- get rewrite function
                do f <- case pluginsRewrite ps of
-                         Nothing              -> pure $ \u p -> (u, p)
-                         (Just (_, rewriteOutgoingFn)) ->
-                           do liftIO $ rewriteOutgoingFn
-
+                    Nothing -> pure $ \pathSegments params -> Nothing
+                    (Just (_, outgoingFn)) ->
+                      do f <- liftIO outgoingFn
+                         pure $ f
                   pure $ Just $ \u p ->
-                    let (pathSegments, params) = f (pluginName : (showFn u)) p
-                    in baseURI <> (decodeUtf8 $ BS.toStrict $ toLazyByteString $ encodePathSegments pathSegments)  <> paramsToQueryString (map (\(k, v) -> (k, fromMaybe mempty v)) params)
+                    let pathSegments = pluginName : (showFn u)
+                    in let (paths, params) =
+                             case f pathSegments p of
+                               Nothing -> (pathSegments, p)
+                               (Just (pathSegments', p')) -> (pathSegments', p')
+                       in baseURI <> (decodeUtf8 $ BS.toStrict $ toLazyByteString $ encodePathSegments pathSegments)  <> paramsToQueryString (map (\(k, v) -> (k, fromMaybe mempty v)) params)
 
 -- | set the current @theme@
 setTheme :: (MonadIO m) =>
