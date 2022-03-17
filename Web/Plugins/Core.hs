@@ -200,6 +200,7 @@ module Web.Plugins.Core
      , putPluginsSt
      , addPluginState
      , getPluginState
+     , modifyPluginState'
      , modifyPluginsSt
      , addHandler
      , addCleanup
@@ -345,6 +346,16 @@ withPlugins config st action =
                    (\p -> do r <- action p ; destroyPlugins OnNormal p; return r)
 
 ------------------------------------------------------------------------------
+-- PluginsConfig
+------------------------------------------------------------------------------
+
+-- | get the current @st@ value from 'Plugins'
+getPluginsConfig :: (MonadIO m) => Plugins theme n hook config st
+             -> m config
+getPluginsConfig (Plugins tps) =
+    liftIO $ atomically $ pluginsConfig <$> readTVar tps
+
+------------------------------------------------------------------------------
 -- PluginsSt
 ------------------------------------------------------------------------------
 
@@ -404,6 +415,25 @@ getPluginState (Plugins ptv) pluginName =
          (Just tvar) ->
              do dyn <- liftIO $ atomically $ readTVar tvar
                 return $ fromDynamic dyn
+
+-- | modify the plugin state
+--
+-- If the plugin did not register any state, then this is a noop
+modifyPluginState' :: (MonadIO m, Typeable state) =>
+                  Plugins theme n hook config st
+               -> Text -- plugin name
+               -> (state -> state)
+               -> m ()
+modifyPluginState'  (Plugins ptv) pluginName modifier =
+    do states <- liftIO $ atomically $ pluginsPluginState <$> readTVar ptv
+       case Map.lookup pluginName states of
+         Nothing -> pure ()
+         (Just tvar) ->
+             do liftIO $ atomically $ modifyTVar' tvar $ \d ->
+                  case fromDynamic d of
+                    Nothing -> d
+                    (Just st) -> toDyn (modifier st)
+                pure ()
 
 -- | add a new cleanup action to the top of the stack
 addCleanup :: (MonadIO m) => Plugins theme n hook config st -> When -> IO () -> m ()
